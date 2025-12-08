@@ -412,11 +412,12 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料到 Submission ---
-def sync_history_to_db(dept, semester, grade):
+# --- 4.6 同步歷史資料到 Submission (修正版：一次同步該科全學年資料) ---
+def sync_history_to_db(dept):
     """
     當勾選「載入歷史資料」且按下轉 PDF 時觸發。
-    功能：找出 DB_History 有，但 Submission_Records 沒有的資料 (比對 UUID)，
+    功能：找出 DB_History 中該科別 (1-3年級, 1-2學期) 有，
+    但 Submission_Records 沒有的資料 (比對 UUID)，
     將這些資料直接寫入 Submission_Records。
     """
     client = get_connection()
@@ -435,14 +436,15 @@ def sync_history_to_db(dept, semester, grade):
         data_sub = ws_sub.get_all_records()
         df_sub = pd.DataFrame(data_sub)
 
-        # 篩選當前科別/年級/學期
+        # 篩選邏輯修改：只鎖定科別，並包含 1~3 年級、1~2 學期
         if not df_hist.empty:
             df_hist['年級'] = df_hist['年級'].astype(str)
             df_hist['學期'] = df_hist['學期'].astype(str)
+            
             target_hist = df_hist[
                 (df_hist['科別'] == dept) & 
-                (df_hist['學期'] == str(semester)) & 
-                (df_hist['年級'] == str(grade))
+                (df_hist['年級'].isin(['1', '2', '3'])) & 
+                (df_hist['學期'].isin(['1', '2']))
             ]
         else:
             target_hist = pd.DataFrame()
@@ -469,8 +471,8 @@ def sync_history_to_db(dept, semester, grade):
                         return str(row[k]).strip()
                 return ""
 
+            # 只有當 UUID 不存在於 Submission 時才寫入
             if h_uuid and h_uuid not in existing_uuids:
-                # 這是 History 有，但 Submission 沒有的 -> 準備寫入
                 new_row = [
                     h_uuid,
                     timestamp,
@@ -494,6 +496,8 @@ def sync_history_to_db(dept, semester, grade):
 
         if rows_to_append:
             ws_sub.append_rows(rows_to_append)
+            # 為了讓使用者知道同步了多少筆，可以在後台印出，或直接回傳 True
+            print(f"已同步 {len(rows_to_append)} 筆歷史資料")
             return True 
         
         return False 
