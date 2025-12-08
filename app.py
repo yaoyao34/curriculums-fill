@@ -103,15 +103,16 @@ def get_connection():
             return None
     return gspread.authorize(creds)
 
-# --- 2. 資料讀取 (v8修正版：加入班級精準比對，解決同名課程對映錯誤) ---
+# --- 2. 資料讀取 (v9修正版：歷史模式下自動對映 Curriculum 的課程類別) ---
 def load_data(dept, semester, grade, use_history=False):
     client = get_connection()
     if not client: return pd.DataFrame()
     try:
         sh = client.open(SPREADSHEET_NAME)
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
+        ws_curr = sh.worksheet(SHEET_CURRICULUM) # 提前讀取 Curriculum
         
-        # 讀取 Submission (共用)
+        # 讀取工作表通用函式
         def get_df(ws):
             data = ws.get_all_values()
             if not data: return pd.DataFrame()
@@ -141,12 +142,29 @@ def load_data(dept, semester, grade, use_history=False):
             return pd.DataFrame(rows, columns=new_headers)
 
         df_sub = get_df(ws_sub)
-        
+        df_curr = get_df(ws_curr) # 讀取課表
+
         # 統一轉字串
         if not df_sub.empty:
             df_sub['年級'] = df_sub['年級'].astype(str)
             df_sub['學期'] = df_sub['學期'].astype(str)
             df_sub['科別'] = df_sub['科別'].astype(str)
+        
+        # --- 建立課程類別對照表 (Map) ---
+        # Key: (課程名稱, 年級, 學期) -> Value: 課程類別
+        category_map = {}
+        if not df_curr.empty:
+            df_curr['年級'] = df_curr['年級'].astype(str)
+            df_curr['學期'] = df_curr['學期'].astype(str)
+            df_curr['科別'] = df_curr['科別'].astype(str)
+            
+            # 只篩選目前科別的課表來做對映，避免混淆
+            target_dept_curr = df_curr[df_curr['科別'] == dept]
+            
+            for _, row in target_dept_curr.iterrows():
+                # 使用 (名稱, 年級, 學期) 當作 Key 比較精準
+                k = (row['課程名稱'], str(row['年級']), str(row['學期']))
+                category_map[k] = row['課程類別']
 
         display_rows = []
         displayed_uuids = set()
@@ -154,24 +172,14 @@ def load_data(dept, semester, grade, use_history=False):
         # --- 輔助函式：檢查班級交集 ---
         def parse_classes(class_str):
             if not class_str: return set()
-            # 處理全形逗號與引號
             clean_str = str(class_str).replace('"', '').replace("'", "").replace('，', ',')
             return {c.strip() for c in clean_str.split(',') if c.strip()}
 
         def check_class_match(default_class_str, submission_class_str):
-            """
-            檢查 預設班級 與 填報班級 是否有交集
-            例如: 預設="一建築", 填報="一建築,一營造" -> True
-            例如: 預設="一營造", 填報="一建築" -> False
-            """
             def_set = parse_classes(default_class_str)
             sub_set = parse_classes(submission_class_str)
-            # 如果預設班級是空的，通常視為通用或不需篩選，回傳 True (視需求而定，這裡設為 True 較保險)
             if not def_set: return True
-            # 如果沒有填報班級，無法匹配
             if not sub_set: return False
-            
-            # 檢查是否有交集
             return not def_set.isdisjoint(sub_set)
 
         # ==========================================
@@ -211,6 +219,19 @@ def load_data(dept, semester, grade, use_history=False):
                         if '字號(1)' in row_data and '審定字號(1)' not in row_data: row_data['審定字號(1)'] = row_data['字號(1)']
                         if '字號(2)' in row_data and '審定字號(2)' not in row_data: row_data['審定字號(2)'] = row_data['字號(2)']
 
+                    # --- 關鍵修正：從 Map 補上正確的「課程類別」 ---
+                    c_name = row_data.get('課程名稱', '')
+                    # 嘗試用 (名稱, 年級, 學期) 查找
+                    map_key = (c_name, str(grade), str(semester))
+                    
+                    if map_key in category_map:
+                        row_data['課程類別'] = category_map[map_key]
+                    else:
+                        # 如果找不到完全匹配，嘗試只用名稱找 (防呆)
+                        # 這邊簡單處理：若原本沒類別，設為空白或保留原值
+                        if '課程類別' not in row_data or not row_data['課程類別']:
+                             row_data['課程類別'] = "" 
+
                     display_rows.append(row_data)
                     displayed_uuids.add(h_uuid)
 
@@ -218,12 +239,8 @@ def load_data(dept, semester, grade, use_history=False):
         # 模式 B: 不載入歷史 (Curriculum Mode - 預設)
         # ==========================================
         else:
-            ws_curr = sh.worksheet(SHEET_CURRICULUM)
-            df_curr = get_df(ws_curr)
+            # 這裡 df_curr 已經在上面讀取過了，直接使用
             if not df_curr.empty:
-                df_curr['年級'] = df_curr['年級'].astype(str)
-                df_curr['學期'] = df_curr['學期'].astype(str)
-                
                 mask_curr = (df_curr['科別'] == dept) & (df_curr['學期'] == str(semester)) & (df_curr['年級'] == str(grade))
                 target_curr = df_curr[mask_curr]
 
@@ -245,7 +262,6 @@ def load_data(dept, semester, grade, use_history=False):
                         for _, s_row in sub_matches.iterrows():
                             s_class_str = str(s_row.get('適用班級', ''))
                             
-                            # 關鍵修正：檢查班級是否匹配
                             if check_class_match(default_class, s_class_str):
                                 s_data = s_row.to_dict()
                                 s_data['勾選'] = False
@@ -254,7 +270,7 @@ def load_data(dept, semester, grade, use_history=False):
                                 displayed_uuids.add(s_data.get('uuid'))
                                 found_match = True
                     
-                    # 3. 如果找不到「同名」且「班級對應」的填報，才顯示預設空白列
+                    # 3. 如果找不到匹配，顯示預設空白列
                     if not found_match:
                         new_uuid = str(uuid.uuid4())
                         display_rows.append({
@@ -277,7 +293,6 @@ def load_data(dept, semester, grade, use_history=False):
             
             for _, s_row in orphan_subs.iterrows():
                 s_uuid = s_row.get('uuid')
-                # 只有當這個 UUID 還沒被顯示過才加入
                 if s_uuid and s_uuid not in displayed_uuids:
                     s_data = s_row.to_dict()
                     s_data['勾選'] = False
@@ -303,6 +318,8 @@ def load_data(dept, semester, grade, use_history=False):
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
+
+
 # --- 3. 取得課程列表 ---
 def get_course_list():
     if 'data' in st.session_state and not st.session_state['data'].empty:
