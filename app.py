@@ -103,13 +103,12 @@ def get_connection():
             return None
     return gspread.authorize(creds)
 
-# --- 2. 資料讀取 (v7修正版：徹底解決 InvalidIndexError) ---
+# --- 2. 資料讀取 (v8修正版：加入班級精準比對，解決同名課程對映錯誤) ---
 def load_data(dept, semester, grade, use_history=False):
     client = get_connection()
     if not client: return pd.DataFrame()
     try:
         sh = client.open(SPREADSHEET_NAME)
-        # 根據模式決定讀取哪些工作表，但為了比對通常都需要 Sub
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
         
         # 讀取 Submission (共用)
@@ -124,7 +123,6 @@ def load_data(dept, semester, grade, use_history=False):
                 c = str(col).strip()
                 if c in seen:
                     seen[c] += 1
-                    # 重新命名重複欄位，避免 InvalidIndexError
                     new_name = f"{c}({seen[c]})" 
                     if c == '教科書': new_name = f"教科書(優先{seen[c]})"
                     elif c == '冊次': new_name = f"冊次({seen[c]})"
@@ -144,7 +142,7 @@ def load_data(dept, semester, grade, use_history=False):
 
         df_sub = get_df(ws_sub)
         
-        # 統一轉字串避免比對錯誤
+        # 統一轉字串
         if not df_sub.empty:
             df_sub['年級'] = df_sub['年級'].astype(str)
             df_sub['學期'] = df_sub['學期'].astype(str)
@@ -152,6 +150,29 @@ def load_data(dept, semester, grade, use_history=False):
 
         display_rows = []
         displayed_uuids = set()
+
+        # --- 輔助函式：檢查班級交集 ---
+        def parse_classes(class_str):
+            if not class_str: return set()
+            # 處理全形逗號與引號
+            clean_str = str(class_str).replace('"', '').replace("'", "").replace('，', ',')
+            return {c.strip() for c in clean_str.split(',') if c.strip()}
+
+        def check_class_match(default_class_str, submission_class_str):
+            """
+            檢查 預設班級 與 填報班級 是否有交集
+            例如: 預設="一建築", 填報="一建築,一營造" -> True
+            例如: 預設="一營造", 填報="一建築" -> False
+            """
+            def_set = parse_classes(default_class_str)
+            sub_set = parse_classes(submission_class_str)
+            # 如果預設班級是空的，通常視為通用或不需篩選，回傳 True (視需求而定，這裡設為 True 較保險)
+            if not def_set: return True
+            # 如果沒有填報班級，無法匹配
+            if not sub_set: return False
+            
+            # 檢查是否有交集
+            return not def_set.isdisjoint(sub_set)
 
         # ==========================================
         # 模式 A: 載入歷史資料 (History Mode)
@@ -164,36 +185,28 @@ def load_data(dept, semester, grade, use_history=False):
                 df_hist['學期'] = df_hist['學期'].astype(str)
                 df_hist['科別'] = df_hist['科別'].astype(str)
                 
-                # 1. 篩選 History
                 mask_hist = (df_hist['科別'] == dept) & (df_hist['學期'] == str(semester)) & (df_hist['年級'] == str(grade))
                 target_hist = df_hist[mask_hist]
 
-                # 2. 遍歷 History，優先使用 Submission 的資料 (對應 UUID)
                 for _, h_row in target_hist.iterrows():
                     h_uuid = str(h_row.get('uuid', '')).strip()
-                    if not h_uuid: h_uuid = str(uuid.uuid4()) # 防呆
+                    if not h_uuid: h_uuid = str(uuid.uuid4())
 
-                    # 嘗試在 Submission 找這個 UUID
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
-                    
                     if not sub_match.empty:
-                        # [情境] Submission 有這筆資料 (已被修改過) -> 用 Submission
                         s_row = sub_match.iloc[0]
-                        row_data = s_row.to_dict() # 轉 dict 避免 index 問題
-                        # 確保 uuid 一致
+                        row_data = s_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
                     else:
-                        # [情境] Submission 沒這筆 -> 用 History 原文
-                        row_data = h_row.to_dict() # 轉 dict 避免 index 問題
+                        row_data = h_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
                         
-                        # 補齊可能缺失的欄位 key
                         if '教科書(1)' in row_data and '教科書(優先1)' not in row_data: row_data['教科書(優先1)'] = row_data['教科書(1)']
                         if '字號(1)' in row_data and '審定字號(1)' not in row_data: row_data['審定字號(1)'] = row_data['字號(1)']
                         if '字號(2)' in row_data and '審定字號(2)' not in row_data: row_data['審定字號(2)'] = row_data['字號(2)']
@@ -219,22 +232,30 @@ def load_data(dept, semester, grade, use_history=False):
                     c_type = c_row['課程類別']
                     default_class = c_row.get('預設適用班級') or c_row.get('適用班級', '')
 
-                    # 找 Submission 對應
+                    # 1. 先找出同課程名稱的所有填報紀錄
                     sub_matches = pd.DataFrame()
                     if not df_sub.empty:
                         mask_sub = (df_sub['科別'] == dept) & (df_sub['學期'] == str(semester)) & (df_sub['年級'] == str(grade)) & (df_sub['課程名稱'] == c_name)
                         sub_matches = df_sub[mask_sub]
                     
+                    found_match = False
+                    
                     if not sub_matches.empty:
-                         # 顯示所有找到的 Submission
+                        # 2. 遍歷這些同名課程，檢查「班級」是否對應
                         for _, s_row in sub_matches.iterrows():
-                            s_data = s_row.to_dict()
-                            s_data['勾選'] = False
-                            s_data['課程類別'] = c_type # 補回類別
-                            display_rows.append(s_data)
-                            displayed_uuids.add(s_data.get('uuid'))
-                    else:
-                        # 沒填報過 -> 顯示預設空白列
+                            s_class_str = str(s_row.get('適用班級', ''))
+                            
+                            # 關鍵修正：檢查班級是否匹配
+                            if check_class_match(default_class, s_class_str):
+                                s_data = s_row.to_dict()
+                                s_data['勾選'] = False
+                                s_data['課程類別'] = c_type
+                                display_rows.append(s_data)
+                                displayed_uuids.add(s_data.get('uuid'))
+                                found_match = True
+                    
+                    # 3. 如果找不到「同名」且「班級對應」的填報，才顯示預設空白列
+                    if not found_match:
                         new_uuid = str(uuid.uuid4())
                         display_rows.append({
                             "勾選": False,
@@ -256,6 +277,7 @@ def load_data(dept, semester, grade, use_history=False):
             
             for _, s_row in orphan_subs.iterrows():
                 s_uuid = s_row.get('uuid')
+                # 只有當這個 UUID 還沒被顯示過才加入
                 if s_uuid and s_uuid not in displayed_uuids:
                     s_data = s_row.to_dict()
                     s_data['勾選'] = False
@@ -266,13 +288,11 @@ def load_data(dept, semester, grade, use_history=False):
         # 轉成 DataFrame 並排序
         df_final = pd.DataFrame(display_rows)
         if not df_final.empty:
-            # 確保欄位存在，避免顯示錯誤
             required_cols = ["勾選", "課程類別", "課程名稱", "適用班級", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "備註1"]
             for col in required_cols:
                 if col not in df_final.columns:
                     df_final[col] = ""
             
-            # 排序
             if '課程類別' in df_final.columns and '課程名稱' in df_final.columns:
                  df_final = df_final.sort_values(by=['課程類別', '課程名稱'], ascending=[False, True]).reset_index(drop=True)
 
@@ -283,7 +303,6 @@ def load_data(dept, semester, grade, use_history=False):
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
-
 # --- 3. 取得課程列表 ---
 def get_course_list():
     if 'data' in st.session_state and not st.session_state['data'].empty:
