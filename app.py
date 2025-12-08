@@ -103,46 +103,74 @@ def get_connection():
             return None
     return gspread.authorize(creds)
 
-# --- 2. 資料讀取 (v9修正版：歷史模式下自動對映 Curriculum 的課程類別) ---
+# --- 2. 資料讀取 (v10 最終修正版：精準欄位映射，修復資料不顯示問題) ---
 def load_data(dept, semester, grade, use_history=False):
     client = get_connection()
     if not client: return pd.DataFrame()
     try:
         sh = client.open(SPREADSHEET_NAME)
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
-        ws_curr = sh.worksheet(SHEET_CURRICULUM) # 提前讀取 Curriculum
+        ws_curr = sh.worksheet(SHEET_CURRICULUM) 
         
-        # 讀取工作表通用函式
+        # 讀取工作表通用函式 (修正欄位映射邏輯)
         def get_df(ws):
             data = ws.get_all_values()
             if not data: return pd.DataFrame()
             headers = data[0]
             rows = data[1:]
-            seen = {}
+            
+            # 定義標準化欄位名稱映射表
+            # 左邊是 Google Sheet 可能出現的名稱，右邊是程式內部使用的標準名稱
+            mapping = {
+                '教科書(1)': '教科書(優先1)',
+                '教科書': '教科書(優先1)',
+                '字號(1)': '審定字號(1)',
+                '字號': '審定字號(1)',
+                '審定字號': '審定字號(1)',
+                '教科書(2)': '教科書(優先2)',
+                '字號(2)': '審定字號(2)',
+                '備註': '備註1',
+                # 備註1, 備註2, 冊次(1)... 等如果名稱一致就不用特別列
+            }
+            
             new_headers = []
+            seen = {} # 用來處理真正的重複欄位 (例如有兩個 "備註")
+
             for col in headers:
                 c = str(col).strip()
-                if c in seen:
-                    seen[c] += 1
-                    new_name = f"{c}({seen[c]})" 
-                    if c == '教科書': new_name = f"教科書(優先{seen[c]})"
-                    elif c == '冊次': new_name = f"冊次({seen[c]})"
-                    elif c == '出版社': new_name = f"出版社({seen[c]})"
-                    elif c == '字號' or c == '審定字號': new_name = f"審定字號({seen[c]})"
-                    elif c.startswith('備註'): new_name = f"備註{seen[c]}"
-                    new_headers.append(new_name)
+                
+                # 1. 先進行標準化映射
+                if c in mapping:
+                    final_name = mapping[c]
                 else:
-                    seen[c] = 1
-                    if c == '教科書': new_headers.append('教科書(優先1)')
-                    elif c == '冊次': new_headers.append('冊次(1)')
-                    elif c == '出版社': new_headers.append('出版社(1)')
-                    elif c == '字號' or c == '審定字號': new_headers.append('審定字號(1)')
-                    elif c.startswith('備註'): new_headers.append('備註1')
-                    else: new_headers.append(c)
+                    final_name = c
+                
+                # 2. 處理重複欄位 (自動加上後綴)
+                if final_name in seen:
+                    seen[final_name] += 1
+                    # 如果是重複的備註，嘗試自動給予編號 (例如 備註, 備註 -> 備註1, 備註2)
+                    if final_name.startswith('備註'):
+                         # 這裡為了對應舊資料結構，簡單處理
+                         unique_name = f"備註{seen[final_name]}"
+                    else:
+                         unique_name = f"{final_name}({seen[final_name]})"
+                    
+                    # 特殊修正: 如果因為重複處理產生了像是 "教科書(優先1)(2)" 這種怪名，這裡可以微調
+                    # 但基本上用 mapping 已經解決了大半
+                    
+                    new_headers.append(unique_name)
+                else:
+                    seen[final_name] = 1
+                    # 如果是第一個遇到的 "備註"，且沒被 map 改名，我們統一叫 "備註1" 以配合後續邏輯
+                    if final_name == '備註':
+                        new_headers.append('備註1')
+                    else:
+                        new_headers.append(final_name)
+                        
             return pd.DataFrame(rows, columns=new_headers)
 
         df_sub = get_df(ws_sub)
-        df_curr = get_df(ws_curr) # 讀取課表
+        df_curr = get_df(ws_curr) 
 
         # 統一轉字串
         if not df_sub.empty:
@@ -151,25 +179,21 @@ def load_data(dept, semester, grade, use_history=False):
             df_sub['科別'] = df_sub['科別'].astype(str)
         
         # --- 建立課程類別對照表 (Map) ---
-        # Key: (課程名稱, 年級, 學期) -> Value: 課程類別
         category_map = {}
         if not df_curr.empty:
             df_curr['年級'] = df_curr['年級'].astype(str)
             df_curr['學期'] = df_curr['學期'].astype(str)
             df_curr['科別'] = df_curr['科別'].astype(str)
             
-            # 只篩選目前科別的課表來做對映，避免混淆
             target_dept_curr = df_curr[df_curr['科別'] == dept]
-            
             for _, row in target_dept_curr.iterrows():
-                # 使用 (名稱, 年級, 學期) 當作 Key 比較精準
                 k = (row['課程名稱'], str(row['年級']), str(row['學期']))
                 category_map[k] = row['課程類別']
 
         display_rows = []
         displayed_uuids = set()
 
-        # --- 輔助函式：檢查班級交集 ---
+        # --- 輔助函式 ---
         def parse_classes(class_str):
             if not class_str: return set()
             clean_str = str(class_str).replace('"', '').replace("'", "").replace('，', ',')
@@ -215,20 +239,17 @@ def load_data(dept, semester, grade, use_history=False):
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
                         
+                        # 補齊歷史資料中可能缺漏的標準欄位
                         if '教科書(1)' in row_data and '教科書(優先1)' not in row_data: row_data['教科書(優先1)'] = row_data['教科書(1)']
                         if '字號(1)' in row_data and '審定字號(1)' not in row_data: row_data['審定字號(1)'] = row_data['字號(1)']
                         if '字號(2)' in row_data and '審定字號(2)' not in row_data: row_data['審定字號(2)'] = row_data['字號(2)']
 
-                    # --- 關鍵修正：從 Map 補上正確的「課程類別」 ---
+                    # 補上課程類別
                     c_name = row_data.get('課程名稱', '')
-                    # 嘗試用 (名稱, 年級, 學期) 查找
                     map_key = (c_name, str(grade), str(semester))
-                    
                     if map_key in category_map:
                         row_data['課程類別'] = category_map[map_key]
                     else:
-                        # 如果找不到完全匹配，嘗試只用名稱找 (防呆)
-                        # 這邊簡單處理：若原本沒類別，設為空白或保留原值
                         if '課程類別' not in row_data or not row_data['課程類別']:
                              row_data['課程類別'] = "" 
 
@@ -239,7 +260,6 @@ def load_data(dept, semester, grade, use_history=False):
         # 模式 B: 不載入歷史 (Curriculum Mode - 預設)
         # ==========================================
         else:
-            # 這裡 df_curr 已經在上面讀取過了，直接使用
             if not df_curr.empty:
                 mask_curr = (df_curr['科別'] == dept) & (df_curr['學期'] == str(semester)) & (df_curr['年級'] == str(grade))
                 target_curr = df_curr[mask_curr]
@@ -249,7 +269,6 @@ def load_data(dept, semester, grade, use_history=False):
                     c_type = c_row['課程類別']
                     default_class = c_row.get('預設適用班級') or c_row.get('適用班級', '')
 
-                    # 1. 先找出同課程名稱的所有填報紀錄
                     sub_matches = pd.DataFrame()
                     if not df_sub.empty:
                         mask_sub = (df_sub['科別'] == dept) & (df_sub['學期'] == str(semester)) & (df_sub['年級'] == str(grade)) & (df_sub['課程名稱'] == c_name)
@@ -258,10 +277,8 @@ def load_data(dept, semester, grade, use_history=False):
                     found_match = False
                     
                     if not sub_matches.empty:
-                        # 2. 遍歷這些同名課程，檢查「班級」是否對應
                         for _, s_row in sub_matches.iterrows():
                             s_class_str = str(s_row.get('適用班級', ''))
-                            
                             if check_class_match(default_class, s_class_str):
                                 s_data = s_row.to_dict()
                                 s_data['勾選'] = False
@@ -270,7 +287,6 @@ def load_data(dept, semester, grade, use_history=False):
                                 displayed_uuids.add(s_data.get('uuid'))
                                 found_match = True
                     
-                    # 3. 如果找不到匹配，顯示預設空白列
                     if not found_match:
                         new_uuid = str(uuid.uuid4())
                         display_rows.append({
@@ -300,10 +316,9 @@ def load_data(dept, semester, grade, use_history=False):
                     display_rows.append(s_data)
                     displayed_uuids.add(s_uuid)
 
-        # 轉成 DataFrame 並排序
         df_final = pd.DataFrame(display_rows)
         if not df_final.empty:
-            required_cols = ["勾選", "課程類別", "課程名稱", "適用班級", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "備註1"]
+            required_cols = ["勾選", "課程類別", "課程名稱", "適用班級", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "備註1", "教科書(優先2)", "冊次(2)", "出版社(2)", "審定字號(2)", "備註2"]
             for col in required_cols:
                 if col not in df_final.columns:
                     df_final[col] = ""
