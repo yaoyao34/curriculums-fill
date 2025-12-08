@@ -970,7 +970,7 @@ def main():
                 with st.spinner(f"正在處理 {dept} PDF..."):
                     if st.session_state.get('use_history'):
                         st.info("正在同步歷史資料到填報紀錄...")
-                        sync_success = sync_history_to_db(dept, sem, grade)
+                        sync_success = sync_history_to_db(dept)
                         if sync_success:
                             st.success("✅ 歷史資料已同步寫入！")
                     
