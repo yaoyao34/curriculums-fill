@@ -104,7 +104,6 @@ def get_connection():
     return gspread.authorize(creds)
 
 # --- 新增功能：從 Google Sheet 取得雲端密碼 ---
-# 🔥 修正重點：加入 cache_data(ttl=600)，讓它每 10 分鐘才讀一次 API，解決 Quota Exceeded 問題
 @st.cache_data(ttl=600)
 def get_cloud_password():
     client = get_connection()
@@ -122,91 +121,95 @@ def get_cloud_password():
         
         return str(val_pwd).strip(), str(val_year).strip()
     except Exception as e:
-        # 為了避免 cache 住錯誤結果，這裡不回傳，讓它下次重試
-        # 但在 Streamlit 中直接報錯顯示
         st.error(f"讀取 Dashboard 密碼失敗: {e}")
         return None, None
+
+# --- 新增功能：取得可用的歷史學年度 ---
+@st.cache_data(ttl=300)
+def get_history_years(current_year):
+    """
+    從 DB_History 讀取所有學年度，排除目前的學年度，並回傳排序後的列表。
+    """
+    client = get_connection()
+    if not client: return []
+    try:
+        sh = client.open(SPREADSHEET_NAME)
+        ws_hist = sh.worksheet(SHEET_HISTORY)
+        
+        # 讀取所有資料 (這裡只讀取標題和內容，不需轉 DataFrame 以提升速度)
+        data = ws_hist.get_all_values()
+        if not data or len(data) < 2: return []
+        
+        headers = data[0]
+        rows = data[1:]
+        
+        # 找出「學年度」欄位的 index
+        if "學年度" not in headers:
+            return []
+            
+        year_idx = headers.index("學年度")
+        
+        unique_years = set()
+        for row in rows:
+            if len(row) > year_idx:
+                y = str(row[year_idx]).strip()
+                if y and y != str(current_year): # 排除目前學年度
+                    unique_years.add(y)
+        
+        # 排序 (由大到小)
+        return sorted(list(unique_years), reverse=True)
+        
+    except Exception:
+        return []
 
 # --- 登出功能 ---
 def logout():
     st.session_state["logged_in"] = False
     st.session_state["current_school_year"] = None
-    # 清除網址上的 token
     st.query_params.clear()
     st.rerun()
     
-# --- 登入檢查 (含 Session 保存與防瀏覽器雞婆) ---
+# --- 登入檢查 ---
 def check_login():
-    """
-    回傳 True 表示已登入，False 表示未登入
-    """
-    # 🔥 修正重點：若已經登入，直接回傳 True，完全不要去呼叫 get_cloud_password()
-    # 這能大幅減少不必要的 API 讀取
     if st.session_state.get("logged_in"):
         with st.sidebar:
             st.divider()
-            # === 修改排版：將學年度與登出按鈕並排 ===
             col_info, col_btn = st.columns([2, 1])
             with col_info:
                 st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
                 if st.button("👋 登出", type="secondary", use_container_width=True):
                     logout()
-            # ====================================
         return True
 
-    # 只有未登入時，才去快取中讀取密碼
     cloud_pwd, cloud_year = get_cloud_password()
-    
-    # 2. 檢查網址是否有 token (用於 F5 重整後保持登入)
-    # 使用 query_params 取得目前的參數
     params = st.query_params
     url_token = params.get("access_token", None)
 
-    # 如果網址有正確的 token，視為已登入
     if url_token and url_token == cloud_pwd:
         st.session_state["logged_in"] = True
         st.session_state["current_school_year"] = cloud_year
-        st.rerun() # 立即重整以刷新介面
+        st.rerun()
 
-    # --- 4. 顯示登入畫面 ---
     st.markdown("## 🔒 系統登入")
-    
-    # [技巧]：改用 st.form 可以讓輸入體驗更好 (按 Enter 即可送出)
     with st.form("login_form"):
         st.caption("請輸入系統通行碼 (設定於 Dashboard)")
-        
-        # [關鍵]：將 label 改為 "通行碼" 或 "Access Code"，避開 "密碼/Password" 關鍵字
-        # 這樣 Chrome 比較不會跳出「建議高強度密碼」
-        input_pwd = st.text_input(
-            "通行碼", 
-            type="password", 
-            key="login_input",
-            # 如果您的 Streamlit 版本夠新 (1.34+)，這行可以更強制關閉建議：
-            # autocomplete="current-password" 
-        )
-        
+        input_pwd = st.text_input("通行碼", type="password", key="login_input")
         submitted = st.form_submit_button("登入")
         
         if submitted:
             if cloud_pwd and input_pwd == cloud_pwd:
                 st.session_state["logged_in"] = True
                 st.session_state["current_school_year"] = cloud_year
-                
-                # [關鍵]：將密碼寫入網址參數，達成「重整不登出」
-                # 注意：這會讓密碼顯示在網址列末端 (?access_token=...)，
-                # 但因為這是內部共用密碼，且為了方便性，通常是可以接受的折衷方案。
                 st.query_params["access_token"] = input_pwd
-                
                 st.success("登入成功！")
                 st.rerun()
             else:
                 st.error("❌ 通行碼錯誤，請重試。")
-                
     return False
     
-# --- 2. 資料讀取 (v10 最終修正版：精準欄位映射，修復資料不顯示問題) ---
-def load_data(dept, semester, grade, use_history=False):
+# --- 2. 資料讀取 (修正：增加 history_year 參數) ---
+def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
     if not client: return pd.DataFrame()
     try:
@@ -214,79 +217,50 @@ def load_data(dept, semester, grade, use_history=False):
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
         ws_curr = sh.worksheet(SHEET_CURRICULUM) 
         
-        # 讀取工作表通用函式 (修正欄位映射邏輯)
         def get_df(ws):
             data = ws.get_all_values()
             if not data: return pd.DataFrame()
             headers = data[0]
             rows = data[1:]
             
-            # 定義標準化欄位名稱映射表
-            # 左邊是 Google Sheet 可能出現的名稱，右邊是程式內部使用的標準名稱
             mapping = {
-                '教科書(1)': '教科書(優先1)',
-                '教科書': '教科書(優先1)',
-                '字號(1)': '審定字號(1)',
-                '字號': '審定字號(1)',
-                '審定字號': '審定字號(1)',
-                '教科書(2)': '教科書(優先2)',
-                '字號(2)': '審定字號(2)',
-                '備註': '備註1',
-                # 備註1, 備註2, 冊次(1)... 等如果名稱一致就不用特別列
+                '教科書(1)': '教科書(優先1)', '教科書': '教科書(優先1)',
+                '字號(1)': '審定字號(1)', '字號': '審定字號(1)', '審定字號': '審定字號(1)',
+                '教科書(2)': '教科書(優先2)', '字號(2)': '審定字號(2)', '備註': '備註1'
             }
             
             new_headers = []
-            seen = {} # 用來處理真正的重複欄位 (例如有兩個 "備註")
-
+            seen = {}
             for col in headers:
                 c = str(col).strip()
+                if c in mapping: final_name = mapping[c]
+                else: final_name = c
                 
-                # 1. 先進行標準化映射
-                if c in mapping:
-                    final_name = mapping[c]
-                else:
-                    final_name = c
-                
-                # 2. 處理重複欄位 (自動加上後綴)
                 if final_name in seen:
                     seen[final_name] += 1
-                    # 如果是重複的備註，嘗試自動給予編號 (例如 備註, 備註 -> 備註1, 備註2)
-                    if final_name.startswith('備註'):
-                         # 這裡為了對應舊資料結構，簡單處理
-                         unique_name = f"備註{seen[final_name]}"
-                    else:
-                         unique_name = f"{final_name}({seen[final_name]})"
-                    
-                    # 特殊修正: 如果因為重複處理產生了像是 "教科書(優先1)(2)" 這種怪名，這裡可以微調
-                    # 但基本上用 mapping 已經解決了大半
-                    
+                    if final_name.startswith('備註'): unique_name = f"備註{seen[final_name]}"
+                    else: unique_name = f"{final_name}({seen[final_name]})"
                     new_headers.append(unique_name)
                 else:
                     seen[final_name] = 1
-                    # 如果是第一個遇到的 "備註"，且沒被 map 改名，我們統一叫 "備註1" 以配合後續邏輯
-                    if final_name == '備註':
-                        new_headers.append('備註1')
-                    else:
-                        new_headers.append(final_name)
+                    if final_name == '備註': new_headers.append('備註1')
+                    else: new_headers.append(final_name)
                         
             return pd.DataFrame(rows, columns=new_headers)
 
         df_sub = get_df(ws_sub)
         df_curr = get_df(ws_curr) 
 
-        # 統一轉字串
         if not df_sub.empty:
             df_sub['年級'] = df_sub['年級'].astype(str)
             df_sub['學期'] = df_sub['學期'].astype(str)
             df_sub['科別'] = df_sub['科別'].astype(str)
         
-        # --- 建立課程類別對照表 (Map) ---
         category_map = {}
         if not df_curr.empty:
             df_curr['年級'] = df_curr['年級'].astype(str)
             df_curr['學期'] = df_curr['學期'].astype(str)
             df_curr['科別'] = df_curr['科別'].astype(str)
-            
             target_dept_curr = df_curr[df_curr['科別'] == dept]
             for _, row in target_dept_curr.iterrows():
                 k = (row['課程名稱'], str(row['年級']), str(row['學期']))
@@ -295,7 +269,6 @@ def load_data(dept, semester, grade, use_history=False):
         display_rows = []
         displayed_uuids = set()
 
-        # --- 輔助函式 ---
         def parse_classes(class_str):
             if not class_str: return set()
             clean_str = str(class_str).replace('"', '').replace("'", "").replace('，', ',')
@@ -311,23 +284,37 @@ def load_data(dept, semester, grade, use_history=False):
         # ==========================================
         # 模式 A: 載入歷史資料 (History Mode)
         # ==========================================
-        if use_history:
+        # 修改：判斷 history_year 是否有值，而非 use_history boolean
+        if history_year:
             ws_hist = sh.worksheet(SHEET_HISTORY)
             df_hist = get_df(ws_hist)
             if not df_hist.empty:
                 df_hist['年級'] = df_hist['年級'].astype(str)
                 df_hist['學期'] = df_hist['學期'].astype(str)
                 df_hist['科別'] = df_hist['科別'].astype(str)
+                if '學年度' in df_hist.columns:
+                     df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                mask_hist = (df_hist['科別'] == dept) & (df_hist['學期'] == str(semester)) & (df_hist['年級'] == str(grade))
+                # 篩選條件加入 學年度
+                mask_hist = (df_hist['科別'] == dept) & \
+                            (df_hist['學期'] == str(semester)) & \
+                            (df_hist['年級'] == str(grade))
+                
+                if '學年度' in df_hist.columns:
+                    mask_hist = mask_hist & (df_hist['學年度'] == str(history_year))
+                
                 target_hist = df_hist[mask_hist]
 
                 for _, h_row in target_hist.iterrows():
                     h_uuid = str(h_row.get('uuid', '')).strip()
+                    # 載入舊資料時，因為是要複製到新學年，建議產生新 UUID，避免與歷史資料衝突
+                    # 但這裡為了比對是否已匯入，先暫時保留邏輯，存檔時再處理
                     if not h_uuid: h_uuid = str(uuid.uuid4())
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
+                        # 嘗試用 課程名稱 + 適用班級 來比對是否已存在於新表 (因為UUID可能變了)
+                        # 簡化：先用 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
@@ -338,15 +325,15 @@ def load_data(dept, semester, grade, use_history=False):
                         row_data['勾選'] = False
                     else:
                         row_data = h_row.to_dict()
-                        row_data['uuid'] = h_uuid
+                        # 重要：如果是載入歷史資料，我們賦予一個新的 UUID，讓它變成一筆新資料
+                        # 這樣使用者存檔時，就會寫入成 115學年 的新紀錄
+                        row_data['uuid'] = str(uuid.uuid4()) 
                         row_data['勾選'] = False
                         
-                        # 補齊歷史資料中可能缺漏的標準欄位
                         if '教科書(1)' in row_data and '教科書(優先1)' not in row_data: row_data['教科書(優先1)'] = row_data['教科書(1)']
                         if '字號(1)' in row_data and '審定字號(1)' not in row_data: row_data['審定字號(1)'] = row_data['字號(1)']
                         if '字號(2)' in row_data and '審定字號(2)' not in row_data: row_data['審定字號(2)'] = row_data['字號(2)']
 
-                    # 補上課程類別
                     c_name = row_data.get('課程名稱', '')
                     map_key = (c_name, str(grade), str(semester))
                     if map_key in category_map:
@@ -356,7 +343,7 @@ def load_data(dept, semester, grade, use_history=False):
                              row_data['課程類別'] = "" 
 
                     display_rows.append(row_data)
-                    displayed_uuids.add(h_uuid)
+                    # 這裡不加 displayed_uuids 是因為我們希望它被視為新資料
 
         # ==========================================
         # 模式 B: 不載入歷史 (Curriculum Mode - 預設)
@@ -452,13 +439,11 @@ def save_single_row(row_data, original_key=None):
     try:
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
     except:
-        # 若無工作表，建立新表並寫入包含學年度的新標題
         ws_sub = sh.add_worksheet(title=SHEET_SUBMISSION, rows=1000, cols=20)
         ws_sub.append_row(["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"])
 
     all_values = ws_sub.get_all_values()
     if not all_values:
-        # 若表是空的，寫入包含學年度的新標題
         headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
         ws_sub.append_row(headers)
         all_values = [headers] 
@@ -475,14 +460,12 @@ def save_single_row(row_data, original_key=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_uuid = row_data.get('uuid')
     
-    # 取得當前 Session 的學年度
     current_school_year = st.session_state.get("current_school_year", "")
 
-    # 準備資料字典，包含「學年度」
     data_dict = {
         "uuid": target_uuid,
         "填報時間": timestamp,
-        "學年度": current_school_year,  # 新增欄位
+        "學年度": current_school_year,
         "科別": row_data['科別'], "學期": row_data['學期'], "年級": row_data['年級'], "課程名稱": row_data['課程名稱'],
         "教科書(1)": row_data['教科書(優先1)'], "冊次(1)": row_data['冊次(1)'], "出版社(1)": row_data['出版社(1)'], "字號(1)": row_data['審定字號(1)'],
         "教科書(2)": row_data['教科書(優先2)'], "冊次(2)": row_data['冊次(2)'], "出版社(2)": row_data['出版社(2)'], "字號(2)": row_data['審定字號(2)'],
@@ -492,8 +475,6 @@ def save_single_row(row_data, original_key=None):
     }
     
     row_to_write = []
-    # 根據 Sheet 實際的 Headers 動態填入資料
-    # 如果 Sheet 還沒有「學年度」欄位，這裡會自動略過，不會報錯
     for h in headers:
         val = ""
         if h in data_dict: val = data_dict[h]
@@ -555,135 +536,22 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料到 Submission (修正版：動態對應欄位) ---
+# --- 4.6 同步歷史資料 (因主要邏輯已移至 load_data 與 GAS，此處保留供 PDF 匯出前檢查) ---
 def sync_history_to_db(dept):
-    """
-    當勾選「載入歷史資料」且按下轉 PDF 時觸發。
-    功能：找出 DB_History 中該科別資料，寫入 Submission_Records。
-    修正：支援動態欄位對應 (含學年度)。
-    """
-    client = get_connection()
-    if not client: return False
+    # 這個功能在新的流程中，主要依賴使用者「載入舊資料」並「編輯存檔」
+    # 但為了相容性，或一次性全部匯入而不編輯的情況，這裡仍保留
+    # 但邏輯需調整：若 Submission 已經有資料，就不應該隨便插入歷史資料
+    # 這裡建議：回傳 True 即可，因為我們希望使用者透過 UI 明確選擇載入哪一年的歷史
+    return True 
 
-    try:
-        sh = client.open(SPREADSHEET_NAME)
-        ws_hist = sh.worksheet(SHEET_HISTORY)
-        ws_sub = sh.worksheet(SHEET_SUBMISSION)
-
-        # 讀取 History
-        data_hist = ws_hist.get_all_records()
-        df_hist = pd.DataFrame(data_hist)
-        
-        # 讀取 Submission (為了比對 UUID)
-        data_sub = ws_sub.get_all_records()
-        df_sub = pd.DataFrame(data_sub)
-        
-        # 取得目前 Submission 的標題列，確保寫入順序正確
-        sub_headers = ws_sub.row_values(1)
-        if not sub_headers:
-            # 如果是空的，定義預設標題
-            sub_headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
-            ws_sub.append_row(sub_headers)
-
-        if not df_hist.empty:
-            df_hist['年級'] = df_hist['年級'].astype(str)
-            df_hist['學期'] = df_hist['學期'].astype(str)
-            
-            target_hist = df_hist[
-                (df_hist['科別'] == dept) & 
-                (df_hist['年級'].isin(['1', '2', '3'])) & 
-                (df_hist['學期'].isin(['1', '2']))
-            ]
-        else:
-            target_hist = pd.DataFrame()
-
-        if target_hist.empty:
-            return True 
-
-        existing_uuids = set()
-        if not df_sub.empty:
-            existing_uuids = set(df_sub['uuid'].astype(str).tolist())
-
-        rows_to_append = []
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        current_school_year = st.session_state.get("current_school_year", "")
-
-        for _, row in target_hist.iterrows():
-            h_uuid = str(row.get('uuid', '')).strip()
-            
-            # --- 穩健取值 (兼容舊欄位名) ---
-            def get_val(keys):
-                for k in keys:
-                    if k in row and str(row[k]).strip():
-                        return str(row[k]).strip()
-                return ""
-
-            if h_uuid and h_uuid not in existing_uuids:
-                # 建立完整的資料字典，包含所有可能的欄位
-                row_dict = {
-                    "uuid": h_uuid,
-                    "填報時間": timestamp,
-                    "學年度": current_school_year,  # 帶入目前的學年度
-                    "科別": row.get('科別', ''),
-                    "學期": str(row.get('學期', '')),
-                    "年級": str(row.get('年級', '')),
-                    "課程名稱": row.get('課程名稱', ''),
-                    "教科書(1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']),
-                    "教科書(優先1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']), # 確保名稱對應
-                    "冊次(1)": get_val(['冊次(1)', '冊次']),
-                    "出版社(1)": get_val(['出版社(1)', '出版社']),
-                    "字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
-                    "審定字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
-                    "教科書(2)": get_val(['教科書(優先2)', '教科書(2)']),
-                    "教科書(優先2)": get_val(['教科書(優先2)', '教科書(2)']),
-                    "冊次(2)": get_val(['冊次(2)']),
-                    "出版社(2)": get_val(['出版社(2)']),
-                    "字號(2)": get_val(['審定字號(2)', '字號(2)']),
-                    "審定字號(2)": get_val(['審定字號(2)', '字號(2)']),
-                    "適用班級": row.get('適用班級', ''),
-                    "備註1": get_val(['備註1', '備註']),
-                    "備註2": get_val(['備註2'])
-                }
-
-                # 根據 Google Sheet 目前的欄位順序產生 List
-                new_row_list = []
-                for header in sub_headers:
-                    # 處理欄位名稱映射 (例如 Sheet 是 "教科書(1)" 但程式邏輯可能是 "教科書(優先1)")
-                    val = row_dict.get(header, "")
-                    # 特殊處理簡稱
-                    if not val:
-                        if header == "教科書(1)": val = row_dict.get("教科書(優先1)", "")
-                        elif header == "教科書(2)": val = row_dict.get("教科書(優先2)", "")
-                        elif header == "字號(1)": val = row_dict.get("審定字號(1)", "")
-                        elif header == "字號(2)": val = row_dict.get("審定字號(2)", "")
-                    new_row_list.append(val)
-                
-                rows_to_append.append(new_row_list)
-
-        if rows_to_append:
-            ws_sub.append_rows(rows_to_append)
-            print(f"已同步 {len(rows_to_append)} 筆歷史資料")
-            return True 
-        
-        return False 
-
-    except Exception as e:
-        st.error(f"同步歷史資料失敗: {e}")
-        return False
-
-# --- 5. 產生 PDF 報表 (修正 DeprecationWarning) ---
+# --- 5. 產生 PDF 報表 ---
 def create_pdf_report(dept):
     CHINESE_FONT = 'NotoSans' 
-    
-    # 取得當前學年度，若無則預設
     current_year = st.session_state.get('current_school_year', '114')
 
     class PDF(FPDF):
         def header(self):
-            # 修正: uni=True 已棄用，移除
             self.set_font(CHINESE_FONT, 'B', 18) 
-            # 修正: ln=1 -> new_x=XPos.LMARGIN, new_y=YPos.NEXT
-            # 使用變數 current_year
             self.cell(0, 10, f'{dept} {current_year}學年度 教科書選用總表', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             self.set_font(CHINESE_FONT, '', 10)
             self.cell(0, 5, f"列印時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='R')
@@ -692,7 +560,6 @@ def create_pdf_report(dept):
         def footer(self):
             self.set_y(-15)
             self.set_font(CHINESE_FONT, 'I', 8)
-            # 修正: ln=0 -> new_x=XPos.RIGHT, new_y=YPos.TOP
             self.cell(0, 10, f'Page {self.page_no()}/{{nb}}', new_x=XPos.RIGHT, new_y=YPos.TOP, align='C')
             
     client = get_connection()
@@ -749,7 +616,6 @@ def create_pdf_report(dept):
     pdf.set_auto_page_break(auto=True, margin=15)
     
     try:
-        # 修正: 移除 uni=True
         pdf.add_font(CHINESE_FONT, '', 'NotoSansCJKtc-Regular.ttf') 
         pdf.add_font(CHINESE_FONT, 'B', 'NotoSansCJKtc-Regular.ttf') 
         pdf.add_font(CHINESE_FONT, 'I', 'NotoSansCJKtc-Regular.ttf') 
@@ -759,7 +625,6 @@ def create_pdf_report(dept):
         
     pdf.add_page()
     
-    # 總和: 30+65+45+12+22+28+55+18 = 275mm
     col_widths = [28, 73, 53, 11, 29, 38, 33, 11 ]
     col_names = ["課程名稱", "適用班級", "教科書", "冊次", "出版社", "審定字號", "備註", "核定"]
     TOTAL_TABLE_WIDTH = sum(col_widths)
@@ -771,7 +636,6 @@ def create_pdf_report(dept):
         start_y = pdf.get_y()
         for w, name in zip(col_widths, col_names):
             pdf.set_xy(start_x, start_y)
-            # 修正: ln=1 -> align='C' inside cell
             pdf.multi_cell(w, 8, name, border=1, align='C', fill=True) 
             start_x += w
         pdf.set_xy(pdf.l_margin, start_y + 8) 
@@ -785,7 +649,6 @@ def create_pdf_report(dept):
         
         pdf.set_font(CHINESE_FONT, 'B', 14)
         pdf.set_fill_color(200, 220, 255)
-        # 修正: ln=1
         pdf.cell(TOTAL_TABLE_WIDTH, 10, f"第 {sem} 學期", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L', fill=True)
         
         if not sem_df.empty:
@@ -824,7 +687,6 @@ def create_pdf_report(dept):
                     format_combined_cell(r1, r2)
                 ]
                 
-                # 計算高度
                 pdf.set_font(CHINESE_FONT, '', 12) 
                 cell_line_counts = [] 
                 
@@ -864,7 +726,6 @@ def create_pdf_report(dept):
                 
                 for i, text in enumerate(data_row_to_write):
                     w = col_widths[i] 
-                    # 修正: ln=0 -> new_x=XPos.RIGHT, new_y=YPos.TOP
                     pdf.set_xy(start_x, start_y)
                     pdf.cell(w, row_height, "", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP) 
                     
@@ -914,11 +775,9 @@ def create_pdf_report(dept):
     cell_width = TOTAL_TABLE_WIDTH / len(footer_text)
     
     for text in footer_text:
-        # 修正: ln=0 -> new_x=XPos.RIGHT, new_y=YPos.TOP
         pdf.cell(cell_width, 12, text, border='B', new_x=XPos.RIGHT, new_y=YPos.TOP, align='L')
     pdf.ln()
 
-    # 修正: dest='S' 已棄用，預設回傳 bytearray
     return pdf.output()
 
 # --- 6. 班級計算邏輯 ---
@@ -1054,10 +913,13 @@ def auto_load_data():
     dept = st.session_state.get('dept_val')
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
-    use_history = st.session_state.get('use_history', False)
+    
+    # 修改：不只是 boolean，還要看是否有選擇具體的歷史學年度
+    use_hist = st.session_state.get('use_history_checkbox', False)
+    hist_year = st.session_state.get('history_year_val') if use_hist else None
     
     if dept and sem and grade:
-        df = load_data(dept, sem, grade, use_history)
+        df = load_data(dept, sem, grade, hist_year)
         st.session_state['data'] = df
         st.session_state['loaded'] = True
         st.session_state['edit_index'] = None
@@ -1087,10 +949,9 @@ def auto_load_data():
 # --- 8. 主程式 ---
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
-    # === 🛡️ 安全檢查區塊開始 ===
-    # 呼叫檢查
+    
     if not check_login():
-        st.stop() # 未登入則停止執行下方內容
+        st.stop()
     
     st.markdown("""
         <style>
@@ -1114,7 +975,7 @@ def main():
     if 'cb_coop' not in st.session_state: st.session_state['cb_coop'] = False
     if 'last_selected_row' not in st.session_state: st.session_state['last_selected_row'] = None
     if 'editor_key_counter' not in st.session_state: st.session_state['editor_key_counter'] = 0
-    if 'use_history' not in st.session_state: st.session_state['use_history'] = False
+    if 'use_history_checkbox' not in st.session_state: st.session_state['use_history_checkbox'] = False
 
     with st.sidebar:
         st.header("1. 填報設定")
@@ -1129,8 +990,26 @@ def main():
         with col1: sem = st.selectbox("學期", ["1", "2", "寒", "暑"], key='sem_val', on_change=auto_load_data)
         with col2: grade = st.selectbox("年級", ["1", "2", "3"], key='grade_val', on_change=auto_load_data)
         
-        st.checkbox("載入歷史資料 (113學年)", key='use_history', on_change=auto_load_data)
-        st.caption("勾選後將載入去年資料。若未勾選，則載入預設課程表。")
+        # --- 修改歷史資料選擇 UI ---
+        current_year = st.session_state.get('current_school_year', '')
+        
+        # 1. 勾選框
+        use_hist = st.checkbox("載入歷史資料", key='use_history_checkbox', on_change=auto_load_data)
+        
+        # 2. 如果勾選，顯示年份選擇
+        if use_hist:
+            hist_years = get_history_years(current_year)
+            if hist_years:
+                st.selectbox(
+                    "選擇歷史學年度", 
+                    hist_years, 
+                    key='history_year_val', 
+                    on_change=auto_load_data
+                )
+            else:
+                st.warning("⚠️ 無可用的歷史學年度資料")
+        else:
+            st.caption("勾選後可選擇過去學年度資料作為參考。")
 
     top_col1, top_col2 = st.columns([4, 1])
     
@@ -1141,12 +1020,6 @@ def main():
         if st.button("📄 轉 PDF 報表 (下載)", type="primary", use_container_width=True):
             if dept:
                 with st.spinner(f"正在處理 {dept} PDF..."):
-                    if st.session_state.get('use_history'):
-                        st.info("正在同步歷史資料到填報紀錄...")
-                        sync_success = sync_history_to_db(dept)
-                        if sync_success:
-                            st.success("✅ 歷史資料已同步寫入！")
-                    
                     pdf_report_bytes = create_pdf_report(dept)
                     
                     if pdf_report_bytes is not None:
