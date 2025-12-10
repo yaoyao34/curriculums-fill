@@ -121,33 +121,76 @@ def get_cloud_password():
     except Exception as e:
         st.error(f"讀取 Dashboard 密碼失敗: {e}")
         return None, None
+
+# --- 登出功能 ---
+def logout():
+    st.session_state["logged_in"] = False
+    st.session_state["current_school_year"] = None
+    # 清除網址上的 token
+    st.query_params.clear()
+    st.rerun()
+    
+# --- 登入檢查 (含 Session 保存與防瀏覽器雞婆) ---
 def check_login():
     """
     回傳 True 表示已登入，False 表示未登入
     """
-    if "logged_in" not in st.session_state:
-        st.session_state["logged_in"] = False
-        
-    if st.session_state["logged_in"]:
+    # 1. 取得雲端密碼
+    cloud_pwd, cloud_year = get_cloud_password()
+    
+    # 2. 檢查網址是否有 token (用於 F5 重整後保持登入)
+    # 使用 query_params 取得目前的參數
+    params = st.query_params
+    url_token = params.get("access_token", None)
+
+    # 如果網址有正確的 token，視為已登入
+    if url_token and url_token == cloud_pwd:
+        st.session_state["logged_in"] = True
+        st.session_state["current_school_year"] = cloud_year
+
+    # 3. 檢查 Session State
+    if st.session_state.get("logged_in"):
+        # 已登入狀態，顯示登出按鈕在側邊欄
+        with st.sidebar:
+            st.divider()
+            st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
+            if st.button("👋 登出系統", type="secondary", use_container_width=True):
+                logout()
         return True
 
-    # --- 顯示登入畫面 ---
+    # --- 4. 顯示登入畫面 ---
     st.markdown("## 🔒 系統登入")
-    st.caption("請輸入系統密碼 (密碼設定於 Google Sheet Dashboard)")
     
-    input_pwd = st.text_input("密碼", type="password", key="login_input")
-    
-    if st.button("登入"):
-        with st.spinner("正在驗證密碼..."):
-            cloud_pwd, cloud_year = get_cloud_password()
-            
+    # [技巧]：改用 st.form 可以讓輸入體驗更好 (按 Enter 即可送出)
+    with st.form("login_form"):
+        st.caption("請輸入系統通行碼 (設定於 Dashboard)")
+        
+        # [關鍵]：將 label 改為 "通行碼" 或 "Access Code"，避開 "密碼/Password" 關鍵字
+        # 這樣 Chrome 比較不會跳出「建議高強度密碼」
+        input_pwd = st.text_input(
+            "通行碼", 
+            type="password", 
+            key="login_input",
+            # 如果您的 Streamlit 版本夠新 (1.34+)，這行可以更強制關閉建議：
+            # autocomplete="current-password" 
+        )
+        
+        submitted = st.form_submit_button("登入")
+        
+        if submitted:
             if cloud_pwd and input_pwd == cloud_pwd:
                 st.session_state["logged_in"] = True
-                st.session_state["current_school_year"] = cloud_year # 順便把學年度存起來
+                st.session_state["current_school_year"] = cloud_year
+                
+                # [關鍵]：將密碼寫入網址參數，達成「重整不登出」
+                # 注意：這會讓密碼顯示在網址列末端 (?access_token=...)，
+                # 但因為這是內部共用密碼，且為了方便性，通常是可以接受的折衷方案。
+                st.query_params["access_token"] = input_pwd
+                
                 st.success("登入成功！")
                 st.rerun()
             else:
-                st.error("❌ 密碼錯誤，請重試。")
+                st.error("❌ 通行碼錯誤，請重試。")
                 
     return False
     
@@ -999,9 +1042,9 @@ def auto_load_data():
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
     # === 🛡️ 安全檢查區塊開始 ===
+# 呼叫檢查
     if not check_login():
-        st.stop()  # 如果沒登入，程式到這裡就停止，不顯示下方內容
-    # === 🛡️ 安全檢查區塊結束 ===
+        st.stop() # 未登入則停止執行下方內容
     
     st.markdown("""
         <style>
