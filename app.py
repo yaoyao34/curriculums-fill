@@ -102,6 +102,7 @@ def get_connection():
             st.error("找不到金鑰")
             return None
     return gspread.authorize(creds)
+
 # --- 新增功能：從 Google Sheet 取得雲端密碼 ---
 def get_cloud_password():
     client = get_connection()
@@ -153,9 +154,14 @@ def check_login():
         # 已登入狀態，顯示登出按鈕在側邊欄
         with st.sidebar:
             st.divider()
-            st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
-            if st.button("👋 登出系統", type="secondary", use_container_width=True):
-                logout()
+            # === 修改排版：將學年度與登出按鈕並排 ===
+            col_info, col_btn = st.columns([2, 1])
+            with col_info:
+                st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
+            with col_btn:
+                if st.button("👋 登出", type="secondary", use_container_width=True):
+                    logout()
+            # ====================================
         return True
 
     # --- 4. 顯示登入畫面 ---
@@ -441,12 +447,14 @@ def save_single_row(row_data, original_key=None):
     try:
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
     except:
+        # 若無工作表，建立新表並寫入包含學年度的新標題
         ws_sub = sh.add_worksheet(title=SHEET_SUBMISSION, rows=1000, cols=20)
-        ws_sub.append_row(["uuid", "填報時間", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"])
+        ws_sub.append_row(["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"])
 
     all_values = ws_sub.get_all_values()
     if not all_values:
-        headers = ["uuid", "填報時間", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
+        # 若表是空的，寫入包含學年度的新標題
+        headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
         ws_sub.append_row(headers)
         all_values = [headers] 
     
@@ -454,7 +462,7 @@ def save_single_row(row_data, original_key=None):
     
     if "uuid" not in headers:
         ws_sub.clear() 
-        headers = ["uuid", "填報時間", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
+        headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
         ws_sub.append_row(headers)
         all_values = [headers]
 
@@ -462,9 +470,14 @@ def save_single_row(row_data, original_key=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_uuid = row_data.get('uuid')
     
+    # 取得當前 Session 的學年度
+    current_school_year = st.session_state.get("current_school_year", "")
+
+    # 準備資料字典，包含「學年度」
     data_dict = {
         "uuid": target_uuid,
         "填報時間": timestamp,
+        "學年度": current_school_year,  # 新增欄位
         "科別": row_data['科別'], "學期": row_data['學期'], "年級": row_data['年級'], "課程名稱": row_data['課程名稱'],
         "教科書(1)": row_data['教科書(優先1)'], "冊次(1)": row_data['冊次(1)'], "出版社(1)": row_data['出版社(1)'], "字號(1)": row_data['審定字號(1)'],
         "教科書(2)": row_data['教科書(優先2)'], "冊次(2)": row_data['冊次(2)'], "出版社(2)": row_data['出版社(2)'], "字號(2)": row_data['審定字號(2)'],
@@ -474,6 +487,8 @@ def save_single_row(row_data, original_key=None):
     }
     
     row_to_write = []
+    # 根據 Sheet 實際的 Headers 動態填入資料
+    # 如果 Sheet 還沒有「學年度」欄位，這裡會自動略過，不會報錯
     for h in headers:
         val = ""
         if h in data_dict: val = data_dict[h]
@@ -535,13 +550,12 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料到 Submission (修正版：一次同步該科全學年資料) ---
+# --- 4.6 同步歷史資料到 Submission (修正版：動態對應欄位) ---
 def sync_history_to_db(dept):
     """
     當勾選「載入歷史資料」且按下轉 PDF 時觸發。
-    功能：找出 DB_History 中該科別 (1-3年級, 1-2學期) 有，
-    但 Submission_Records 沒有的資料 (比對 UUID)，
-    將這些資料直接寫入 Submission_Records。
+    功能：找出 DB_History 中該科別資料，寫入 Submission_Records。
+    修正：支援動態欄位對應 (含學年度)。
     """
     client = get_connection()
     if not client: return False
@@ -555,11 +569,17 @@ def sync_history_to_db(dept):
         data_hist = ws_hist.get_all_records()
         df_hist = pd.DataFrame(data_hist)
         
-        # 讀取 Submission
+        # 讀取 Submission (為了比對 UUID)
         data_sub = ws_sub.get_all_records()
         df_sub = pd.DataFrame(data_sub)
+        
+        # 取得目前 Submission 的標題列，確保寫入順序正確
+        sub_headers = ws_sub.row_values(1)
+        if not sub_headers:
+            # 如果是空的，定義預設標題
+            sub_headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
+            ws_sub.append_row(sub_headers)
 
-        # 篩選邏輯修改：只鎖定科別，並包含 1~3 年級、1~2 學期
         if not df_hist.empty:
             df_hist['年級'] = df_hist['年級'].astype(str)
             df_hist['學期'] = df_hist['學期'].astype(str)
@@ -575,14 +595,13 @@ def sync_history_to_db(dept):
         if target_hist.empty:
             return True 
 
-        # 取得已存在的 UUID 集合
         existing_uuids = set()
         if not df_sub.empty:
             existing_uuids = set(df_sub['uuid'].astype(str).tolist())
 
-        # 準備要寫入的 rows
         rows_to_append = []
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_school_year = st.session_state.get("current_school_year", "")
 
         for _, row in target_hist.iterrows():
             h_uuid = str(row.get('uuid', '')).strip()
@@ -594,32 +613,50 @@ def sync_history_to_db(dept):
                         return str(row[k]).strip()
                 return ""
 
-            # 只有當 UUID 不存在於 Submission 時才寫入
             if h_uuid and h_uuid not in existing_uuids:
-                new_row = [
-                    h_uuid,
-                    timestamp,
-                    row.get('科別', ''),
-                    str(row.get('學期', '')),
-                    str(row.get('年級', '')),
-                    row.get('課程名稱', ''),
-                    get_val(['教科書(優先1)', '教科書(1)', '教科書']),
-                    get_val(['冊次(1)', '冊次']),
-                    get_val(['出版社(1)', '出版社']),
-                    get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
-                    get_val(['教科書(優先2)', '教科書(2)']),
-                    get_val(['冊次(2)']),
-                    get_val(['出版社(2)']),
-                    get_val(['審定字號(2)', '字號(2)']),
-                    row.get('適用班級', ''),
-                    get_val(['備註1', '備註']),
-                    get_val(['備註2'])
-                ]
-                rows_to_append.append(new_row)
+                # 建立完整的資料字典，包含所有可能的欄位
+                row_dict = {
+                    "uuid": h_uuid,
+                    "填報時間": timestamp,
+                    "學年度": current_school_year,  # 帶入目前的學年度
+                    "科別": row.get('科別', ''),
+                    "學期": str(row.get('學期', '')),
+                    "年級": str(row.get('年級', '')),
+                    "課程名稱": row.get('課程名稱', ''),
+                    "教科書(1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']),
+                    "教科書(優先1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']), # 確保名稱對應
+                    "冊次(1)": get_val(['冊次(1)', '冊次']),
+                    "出版社(1)": get_val(['出版社(1)', '出版社']),
+                    "字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
+                    "審定字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
+                    "教科書(2)": get_val(['教科書(優先2)', '教科書(2)']),
+                    "教科書(優先2)": get_val(['教科書(優先2)', '教科書(2)']),
+                    "冊次(2)": get_val(['冊次(2)']),
+                    "出版社(2)": get_val(['出版社(2)']),
+                    "字號(2)": get_val(['審定字號(2)', '字號(2)']),
+                    "審定字號(2)": get_val(['審定字號(2)', '字號(2)']),
+                    "適用班級": row.get('適用班級', ''),
+                    "備註1": get_val(['備註1', '備註']),
+                    "備註2": get_val(['備註2'])
+                }
+
+                # 根據 Google Sheet 目前的欄位順序產生 List
+                new_row_list = []
+                for header in sub_headers:
+                    # 處理欄位名稱映射 (例如 Sheet 是 "教科書(1)" 但程式邏輯可能是 "教科書(優先1)")
+                    val = row_dict.get(header, "")
+                    # 特殊處理簡稱
+                    if not val:
+                        if header == "教科書(1)": val = row_dict.get("教科書(優先1)", "")
+                        elif header == "教科書(2)": val = row_dict.get("教科書(優先2)", "")
+                        elif header == "字號(1)": val = row_dict.get("審定字號(1)", "")
+                        elif header == "字號(2)": val = row_dict.get("審定字號(2)", "")
+                    new_row_list.append(val)
+                
+                rows_to_append.append(new_row_list)
 
         if rows_to_append:
             ws_sub.append_rows(rows_to_append)
-            # 為了讓使用者知道同步了多少筆，可以在後台印出，或直接回傳 True
             print(f"已同步 {len(rows_to_append)} 筆歷史資料")
             return True 
         
@@ -633,12 +670,16 @@ def sync_history_to_db(dept):
 def create_pdf_report(dept):
     CHINESE_FONT = 'NotoSans' 
     
+    # 取得當前學年度，若無則預設
+    current_year = st.session_state.get('current_school_year', '114')
+
     class PDF(FPDF):
         def header(self):
             # 修正: uni=True 已棄用，移除
             self.set_font(CHINESE_FONT, 'B', 18) 
             # 修正: ln=1 -> new_x=XPos.LMARGIN, new_y=YPos.NEXT
-            self.cell(0, 10, f'{dept} 114學年度 教科書選用總表', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+            # 使用變數 current_year
+            self.cell(0, 10, f'{dept} {current_year}學年度 教科書選用總表', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             self.set_font(CHINESE_FONT, '', 10)
             self.cell(0, 5, f"列印時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='R')
             self.ln(5)
@@ -817,7 +858,7 @@ def create_pdf_report(dept):
                 start_y = pdf.get_y()
                 
                 for i, text in enumerate(data_row_to_write):
-                    w = col_widths[i]
+                    w = col_widths[i] 
                     # 修正: ln=0 -> new_x=XPos.RIGHT, new_y=YPos.TOP
                     pdf.set_xy(start_x, start_y)
                     pdf.cell(w, row_height, "", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP) 
@@ -1042,7 +1083,7 @@ def auto_load_data():
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
     # === 🛡️ 安全檢查區塊開始 ===
-# 呼叫檢查
+    # 呼叫檢查
     if not check_login():
         st.stop() # 未登入則停止執行下方內容
     
