@@ -102,7 +102,55 @@ def get_connection():
             st.error("找不到金鑰")
             return None
     return gspread.authorize(creds)
+# --- 新增功能：從 Google Sheet 取得雲端密碼 ---
+def get_cloud_password():
+    client = get_connection()
+    if not client: return None, None
+    
+    try:
+        sh = client.open(SPREADSHEET_NAME)
+        # 嘗試開啟 Dashboard，如果沒有這個分頁會報錯
+        ws = sh.worksheet("Dashboard")
+        
+        # 讀取第二列 (資料列)
+        # 假設 A欄=學年度, B欄=密碼
+        val_year = ws.cell(2, 1).value  # A2
+        val_pwd = ws.cell(2, 2).value   # B2
+        
+        return str(val_pwd).strip(), str(val_year).strip()
+    except Exception as e:
+        st.error(f"讀取 Dashboard 密碼失敗: {e}")
+        return None, None
+def check_login():
+    """
+    回傳 True 表示已登入，False 表示未登入
+    """
+    if "logged_in" not in st.session_state:
+        st.session_state["logged_in"] = False
+        
+    if st.session_state["logged_in"]:
+        return True
 
+    # --- 顯示登入畫面 ---
+    st.markdown("## 🔒 系統登入")
+    st.caption("請輸入系統密碼 (密碼設定於 Google Sheet Dashboard)")
+    
+    input_pwd = st.text_input("密碼", type="password", key="login_input")
+    
+    if st.button("登入"):
+        with st.spinner("正在驗證密碼..."):
+            cloud_pwd, cloud_year = get_cloud_password()
+            
+            if cloud_pwd and input_pwd == cloud_pwd:
+                st.session_state["logged_in"] = True
+                st.session_state["current_school_year"] = cloud_year # 順便把學年度存起來
+                st.success("登入成功！")
+                st.rerun()
+            else:
+                st.error("❌ 密碼錯誤，請重試。")
+                
+    return False
+    
 # --- 2. 資料讀取 (v10 最終修正版：精準欄位映射，修復資料不顯示問題) ---
 def load_data(dept, semester, grade, use_history=False):
     client = get_connection()
@@ -950,6 +998,10 @@ def auto_load_data():
 # --- 8. 主程式 ---
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
+    # === 🛡️ 安全檢查區塊開始 ===
+    if not check_login():
+        st.stop()  # 如果沒登入，程式到這裡就停止，不顯示下方內容
+    # === 🛡️ 安全檢查區塊結束 ===
     
     st.markdown("""
         <style>
