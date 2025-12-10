@@ -108,8 +108,11 @@ def get_cloud_password():
     
     try:
         sh = client.open(SPREADSHEET_NAME)
+        # 嘗試開啟 Dashboard，如果沒有這個分頁會報錯
         ws = sh.worksheet("Dashboard")
         
+        # 讀取第二列 (資料列)
+        # 假設 A欄=學年度, B欄=密碼
         val_year = ws.cell(2, 1).value  # A2
         val_pwd = ws.cell(2, 2).value   # B2
         
@@ -162,9 +165,14 @@ def check_login():
     if st.session_state.get("logged_in"):
         with st.sidebar:
             st.divider()
+            # 顯示 Dashboard 設定的學年度
+            current_year = st.session_state.get('current_school_year', '未設定')
+            
+            # 使用 columns 排版：左邊顯示學年度，右邊顯示登出按鈕
             col_info, col_btn = st.columns([2, 1])
             with col_info:
-                st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
+                # 這裡顯示的 current_year 就是登入時從 Dashboard A2 抓取的
+                st.markdown(f"##### 📅 學年度：{current_year}")
             with col_btn:
                 if st.button("👋 登出", type="secondary", use_container_width=True):
                     logout()
@@ -188,6 +196,7 @@ def check_login():
         if submitted:
             if cloud_pwd and input_pwd == cloud_pwd:
                 st.session_state["logged_in"] = True
+                # 在登入成功時，將 Dashboard 讀到的學年度存入 Session
                 st.session_state["current_school_year"] = cloud_year
                 st.query_params["access_token"] = input_pwd
                 st.success("登入成功！")
@@ -444,6 +453,7 @@ def save_single_row(row_data, original_key=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_uuid = row_data.get('uuid')
     
+    # 存檔時使用「Dashboard 設定的目前學年度」
     current_school_year = st.session_state.get("current_school_year", "")
 
     data_dict = {
@@ -531,6 +541,7 @@ def sync_history_to_db(dept, history_year):
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 寫入時使用目前的學年度
         current_school_year = st.session_state.get("current_school_year", "")
         
         if not history_year:
@@ -1285,6 +1296,7 @@ def main():
 
         st.success(f"目前編輯：**{dept}** / **{grade}年級** / **第{sem}學期**")
         
+        # 修正: use_container_width -> width='stretch'
         edited_df = st.data_editor(
             st.session_state['data'],
             num_rows="dynamic",
