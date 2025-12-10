@@ -137,7 +137,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                if st.button("👋 登出", type="secondary", use_container_width=True):
+                if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
 
@@ -154,9 +154,7 @@ def check_login():
     with st.form("login_form"):
         st.caption("請輸入系統通行碼 (設定於 Dashboard)")
         input_pwd = st.text_input("通行碼", type="password", key="login_input")
-        submitted = st.form_submit_button("登入")
-        
-        if submitted:
+        if st.form_submit_button("登入"):
             if cloud_pwd and input_pwd == cloud_pwd:
                 st.session_state["logged_in"] = True
                 st.session_state["current_school_year"] = cloud_year
@@ -167,7 +165,14 @@ def check_login():
                 st.error("❌ 通行碼錯誤。")
     return False
 
-# --- 2. 資料讀取 (修正：處理 history 缺少 '科別' 欄位) ---
+# --- 輔助：比對班級 ---
+def check_class_match(def_s, sub_s):
+    d_set, s_set = parse_classes(def_s), parse_classes(sub_s)
+    if not d_set: return True
+    if not s_set: return False
+    return not d_set.isdisjoint(s_set)
+
+# --- 2. 資料讀取 (恢復簡單邏輯，直接讀取科別) ---
 def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
     if not client: return pd.DataFrame()
@@ -219,43 +224,22 @@ def load_data(dept, semester, grade, history_year=None):
         display_rows = []
         displayed_uuids = set()
 
-        def check_class_match(def_s, sub_s):
-            d_set, s_set = parse_classes(def_s), parse_classes(sub_s)
-            if not d_set: return True
-            if not s_set: return False
-            return not d_set.isdisjoint(s_set)
-
-        # === 模式 A: 載入歷史資料 ===
+        # === 模式 A: 載入歷史資料 (直接使用科別欄位) ===
         if history_year:
             ws_hist = sh.worksheet(SHEET_HISTORY)
             df_hist = get_df(ws_hist)
             if not df_hist.empty:
-                for col in ['年級', '學期']: 
+                for col in ['年級', '學期', '科別']: 
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 篩選：學期、年級、學年度
-                mask_hist = (df_hist['學期'] == str(semester)) & (df_hist['年級'] == str(grade))
+                # 篩選條件：既然已加入科別欄位，直接篩選
+                mask_hist = (df_hist['科別'] == dept) & \
+                            (df_hist['學期'] == str(semester)) & \
+                            (df_hist['年級'] == str(grade))
+                
                 if '學年度' in df_hist.columns:
                     mask_hist = mask_hist & (df_hist['學年度'] == str(history_year))
-                
-                # 🔥 修正：科別篩選 (若無 '科別' 欄位，改用 '適用班級' 判斷)
-                if '科別' in df_hist.columns:
-                    df_hist['科別'] = df_hist['科別'].astype(str)
-                    mask_hist = mask_hist & (df_hist['科別'] == dept)
-                else:
-                    # 取得該科別、該年級的所有可能班級集合
-                    valid_dept_classes = set()
-                    for sys_name in ["普通科", "建教班", "實用技能班"]:
-                        valid_dept_classes.update(get_target_classes_for_dept(dept, grade, sys_name))
-                    
-                    def is_dept_match(row_class_str):
-                        row_classes = parse_classes(str(row_class_str))
-                        return not row_classes.isdisjoint(valid_dept_classes)
-                    
-                    if '適用班級' in df_hist.columns:
-                        mask_class = df_hist['適用班級'].apply(is_dept_match)
-                        mask_hist = mask_hist & mask_class
                 
                 target_hist = df_hist[mask_hist]
 
@@ -438,7 +422,7 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料到 Submission (修正：處理 history 缺少 '科別' 欄位) ---
+# --- 4.6 同步歷史資料到 Submission (修正：直接讀取科別) ---
 def sync_history_to_db(dept, history_year):
     client = get_connection()
     if not client: return False
@@ -465,24 +449,11 @@ def sync_history_to_db(dept, history_year):
         if df_hist.empty: return True
 
         df_hist['學年度'] = df_hist['學年度'].astype(str)
-        df_filtered = df_hist[df_hist['學年度'] == str(history_year)]
-        
-        # 🔥 修正：科別篩選 (若無 '科別' 欄位，改用 '適用班級' 判斷)
-        if '科別' in df_filtered.columns:
-             target_rows = df_filtered[df_filtered['科別'] == dept]
-        else:
-             valid_classes = set()
-             for g in ['1', '2', '3']:
-                 for sys in ["普通科", "建教班", "實用技能班"]:
-                     valid_classes.update(get_target_classes_for_dept(dept, g, sys))
-             
-             filtered_list = []
-             for _, row in df_filtered.iterrows():
-                 row_cls_str = str(row.get('適用班級', ''))
-                 row_classes = parse_classes(row_cls_str)
-                 if not row_classes.isdisjoint(valid_classes):
-                     filtered_list.append(row)
-             target_rows = pd.DataFrame(filtered_list)
+        # 篩選年份與科別 (因您已在 history 插入科別欄位，直接篩選)
+        target_rows = df_hist[
+            (df_hist['學年度'] == str(history_year)) & 
+            (df_hist['科別'] == dept)
+        ]
 
         if len(target_rows) == 0: return True
 
@@ -498,7 +469,7 @@ def sync_history_to_db(dept, history_year):
 
             row_dict = {
                 "uuid": h_uuid, "填報時間": timestamp, "學年度": current_school_year,
-                "科別": row.get('科別', dept), # 若無科別欄位，直接填入目前的 dept
+                "科別": row.get('科別', dept),
                 "學期": str(row.get('學期', '')), "年級": str(row.get('年級', '')), "課程名稱": row.get('課程名稱', ''),
                 "教科書(1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']), "冊次(1)": get_val(['冊次(1)', '冊次']), "出版社(1)": get_val(['出版社(1)', '出版社']), "字號(1)": get_val(['審定字號(1)', '字號(1)']),
                 "教科書(2)": get_val(['教科書(優先2)', '教科書(2)']), "冊次(2)": get_val(['冊次(2)']), "出版社(2)": get_val(['出版社(2)']), "字號(2)": get_val(['審定字號(2)', '字號(2)']),
@@ -806,7 +777,6 @@ def main():
     col1, col2 = st.columns([4, 1])
     with col1: st.title("📚 教科書填報系統")
     with col2:
-        # width='stretch' 取代 use_container_width
         if st.button("📄 轉 PDF 報表 (下載)", type="primary", width="stretch"):
             if dept:
                 with st.spinner(f"正在處理 {dept} PDF..."):
@@ -881,7 +851,6 @@ def main():
             inp_cod2 = c2.text_input("審定字號(2)", value=frm['code2'])
             inp_nt2 = n2.text_input("備註2(作者/單價)", value=frm['note2'])
 
-            # 修正: use_container_width -> width='stretch'
             if st.button("🔄 更新 (存檔)" if is_edit else "➕ 加入 (存檔)", type="primary", width="stretch"):
                 if not inp_cls_str or not inp_bk1 or not inp_pub1 or not inp_vol1: st.error("⚠️ 班級、書名、冊次、出版社必填")
                 else:
@@ -895,7 +864,6 @@ def main():
                     if is_edit: save_single_row(row, st.session_state.get('original_key'))
                     else: save_single_row(row, None)
                     
-                    # Update local DF
                     if is_edit:
                         for k, v in row.items():
                             if k in st.session_state['data'].columns: st.session_state['data'].at[st.session_state['edit_index'], k] = v
@@ -910,8 +878,6 @@ def main():
                     st.rerun()
 
         st.success(f"目前編輯：**{dept}** / **{grade}年級** / **第{sem}學期**")
-        
-        # 修正: use_container_width -> width='stretch'
         st.data_editor(
             st.session_state['data'], num_rows="dynamic", width='stretch', height=600,
             key=f"main_editor_{st.session_state['editor_key_counter']}", on_change=on_editor_change,
