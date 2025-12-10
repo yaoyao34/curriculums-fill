@@ -8,7 +8,7 @@ import base64
 import uuid
 import math
 
-# --- NEW: Import FPDF and Enums for PDF generation (修正 FPDF 警告) ---
+# --- NEW: Import FPDF and Enums for PDF generation ---
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
@@ -35,10 +35,8 @@ def safe_note(row):
             val = ""
 
         val = str(val)
-        # 強制移除 備註1 / 備註2
         val = val.replace("備註1", "").replace("備註2", "")
 
-        # 強制移除 Name: 0, dtype: object
         if "dtype" in val:
             val = val.split("Name:")[0]
 
@@ -48,7 +46,6 @@ def safe_note(row):
     r1 = notes[0] if len(notes) > 0 else ""
     r2 = notes[1] if len(notes) > 1 else ""
 
-    # ✅ ✅ ✅ 重點修正：如果 r1 == r2，視為只有一則備註
     if r1 and r2 and r1 == r2:
         r2 = ""
 
@@ -111,11 +108,8 @@ def get_cloud_password():
     
     try:
         sh = client.open(SPREADSHEET_NAME)
-        # 嘗試開啟 Dashboard，如果沒有這個分頁會報錯
         ws = sh.worksheet("Dashboard")
         
-        # 讀取第二列 (資料列)
-        # 假設 A欄=學年度, B欄=密碼
         val_year = ws.cell(2, 1).value  # A2
         val_pwd = ws.cell(2, 2).value   # B2
         
@@ -127,23 +121,18 @@ def get_cloud_password():
 # --- 新增功能：取得可用的歷史學年度 ---
 @st.cache_data(ttl=300)
 def get_history_years(current_year):
-    """
-    從 DB_History 讀取所有學年度，排除目前的學年度，並回傳排序後的列表。
-    """
     client = get_connection()
     if not client: return []
     try:
         sh = client.open(SPREADSHEET_NAME)
         ws_hist = sh.worksheet(SHEET_HISTORY)
         
-        # 讀取所有資料 (這裡只讀取標題和內容，不需轉 DataFrame 以提升速度)
         data = ws_hist.get_all_values()
         if not data or len(data) < 2: return []
         
         headers = data[0]
         rows = data[1:]
         
-        # 找出「學年度」欄位的 index
         if "學年度" not in headers:
             return []
             
@@ -153,10 +142,9 @@ def get_history_years(current_year):
         for row in rows:
             if len(row) > year_idx:
                 y = str(row[year_idx]).strip()
-                if y and y != str(current_year): # 排除目前學年度
+                if y and y != str(current_year): 
                     unique_years.add(y)
         
-        # 排序 (由大到小)
         return sorted(list(unique_years), reverse=True)
         
     except Exception:
@@ -208,7 +196,7 @@ def check_login():
                 st.error("❌ 通行碼錯誤，請重試。")
     return False
     
-# --- 2. 資料讀取 (修正：增加 history_year 參數) ---
+# --- 2. 資料讀取 ---
 def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
     if not client: return pd.DataFrame()
@@ -284,7 +272,6 @@ def load_data(dept, semester, grade, history_year=None):
         # ==========================================
         # 模式 A: 載入歷史資料 (History Mode)
         # ==========================================
-        # 修改：判斷 history_year 是否有值，而非 use_history boolean
         if history_year:
             ws_hist = sh.worksheet(SHEET_HISTORY)
             df_hist = get_df(ws_hist)
@@ -295,7 +282,6 @@ def load_data(dept, semester, grade, history_year=None):
                 if '學年度' in df_hist.columns:
                      df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 篩選條件加入 學年度
                 mask_hist = (df_hist['科別'] == dept) & \
                             (df_hist['學期'] == str(semester)) & \
                             (df_hist['年級'] == str(grade))
@@ -306,28 +292,26 @@ def load_data(dept, semester, grade, history_year=None):
                 target_hist = df_hist[mask_hist]
 
                 for _, h_row in target_hist.iterrows():
+                    # 🔥 關鍵修正：保持 History 的 UUID
                     h_uuid = str(h_row.get('uuid', '')).strip()
-                    # 載入舊資料時，因為是要複製到新學年，建議產生新 UUID，避免與歷史資料衝突
-                    # 但這裡為了比對是否已匯入，先暫時保留邏輯，存檔時再處理
                     if not h_uuid: h_uuid = str(uuid.uuid4())
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
-                        # 嘗試用 課程名稱 + 適用班級 來比對是否已存在於新表 (因為UUID可能變了)
-                        # 簡化：先用 UUID 比對
+                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
+                        # Submission 有 -> 載入 Submission 的資料 (使用者修改過的)
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
                     else:
+                        # Submission 沒有 -> 載入 History 資料 (預設)
                         row_data = h_row.to_dict()
-                        # 重要：如果是載入歷史資料，我們賦予一個新的 UUID，讓它變成一筆新資料
-                        # 這樣使用者存檔時，就會寫入成 115學年 的新紀錄
-                        row_data['uuid'] = str(uuid.uuid4()) 
+                        row_data['uuid'] = h_uuid # 保持原 UUID
                         row_data['勾選'] = False
                         
                         if '教科書(1)' in row_data and '教科書(優先1)' not in row_data: row_data['教科書(優先1)'] = row_data['教科書(1)']
@@ -343,7 +327,7 @@ def load_data(dept, semester, grade, history_year=None):
                              row_data['課程類別'] = "" 
 
                     display_rows.append(row_data)
-                    # 這裡不加 displayed_uuids 是因為我們希望它被視為新資料
+                    displayed_uuids.add(h_uuid)
 
         # ==========================================
         # 模式 B: 不載入歷史 (Curriculum Mode - 預設)
@@ -536,13 +520,115 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料 (因主要邏輯已移至 load_data 與 GAS，此處保留供 PDF 匯出前檢查) ---
-def sync_history_to_db(dept):
-    # 這個功能在新的流程中，主要依賴使用者「載入舊資料」並「編輯存檔」
-    # 但為了相容性，或一次性全部匯入而不編輯的情況，這裡仍保留
-    # 但邏輯需調整：若 Submission 已經有資料，就不應該隨便插入歷史資料
-    # 這裡建議：回傳 True 即可，因為我們希望使用者透過 UI 明確選擇載入哪一年的歷史
-    return True 
+# --- 4.6 同步歷史資料到 Submission (修正版：依 UUID 比對，Submission 優先) ---
+def sync_history_to_db(dept, history_year):
+    client = get_connection()
+    if not client: return False
+
+    try:
+        sh = client.open(SPREADSHEET_NAME)
+        ws_hist = sh.worksheet(SHEET_HISTORY)
+        ws_sub = sh.worksheet(SHEET_SUBMISSION)
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_school_year = st.session_state.get("current_school_year", "")
+        
+        if not history_year:
+            return True
+
+        data_sub = ws_sub.get_all_records()
+        df_sub = pd.DataFrame(data_sub)
+        
+        # 取得目前 Submission 裡所有的 UUID 集合
+        existing_uuids = set()
+        if not df_sub.empty:
+            existing_uuids = set(df_sub['uuid'].astype(str).tolist())
+
+        sub_headers = ws_sub.row_values(1)
+        if not sub_headers:
+            sub_headers = ["uuid", "填報時間", "學年度", "科別", "學期", "年級", "課程名稱", "教科書(1)", "冊次(1)", "出版社(1)", "字號(1)", "教科書(2)", "冊次(2)", "出版社(2)", "字號(2)", "適用班級", "備註1", "備註2"]
+            ws_sub.append_row(sub_headers)
+
+        data_hist = ws_hist.get_all_records()
+        df_hist = pd.DataFrame(data_hist)
+        
+        if df_hist.empty:
+            return True
+
+        df_hist['學年度'] = df_hist['學年度'].astype(str)
+        df_hist['科別'] = df_hist['科別'].astype(str)
+        
+        target_hist = df_hist[
+            (df_hist['科別'] == dept) & 
+            (df_hist['學年度'] == str(history_year))
+        ]
+
+        if target_hist.empty:
+            st.warning(f"⚠️ 找不到 {history_year} 學年度的 {dept} 歷史資料。")
+            return True
+
+        rows_to_append = []
+
+        for _, row in target_hist.iterrows():
+            h_uuid = str(row.get('uuid', '')).strip()
+            
+            # 🔥 核心邏輯：如果 Submission 已經有這個 UUID，就跳過 (Submission 優先)
+            if h_uuid in existing_uuids:
+                continue
+
+            def get_val(keys):
+                for k in keys:
+                    if k in row and str(row[k]).strip():
+                        return str(row[k]).strip()
+                return ""
+
+            row_dict = {
+                "uuid": h_uuid,                 # 🔥 沿用歷史 UUID
+                "填報時間": timestamp,
+                "學年度": current_school_year,  # 🔥 學年度要改成目前的
+                "科別": row.get('科別', ''),
+                "學期": str(row.get('學期', '')),
+                "年級": str(row.get('年級', '')),
+                "課程名稱": row.get('課程名稱', ''),
+                "教科書(1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']),
+                "教科書(優先1)": get_val(['教科書(優先1)', '教科書(1)', '教科書']),
+                "冊次(1)": get_val(['冊次(1)', '冊次']),
+                "出版社(1)": get_val(['出版社(1)', '出版社']),
+                "字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
+                "審定字號(1)": get_val(['審定字號(1)', '字號(1)', '審定字號', '字號']),
+                "教科書(2)": get_val(['教科書(優先2)', '教科書(2)']),
+                "教科書(優先2)": get_val(['教科書(優先2)', '教科書(2)']),
+                "冊次(2)": get_val(['冊次(2)']),
+                "出版社(2)": get_val(['出版社(2)']),
+                "字號(2)": get_val(['審定字號(2)', '字號(2)']),
+                "審定字號(2)": get_val(['審定字號(2)', '字號(2)']),
+                "適用班級": row.get('適用班級', ''),
+                "備註1": get_val(['備註1', '備註']),
+                "備註2": get_val(['備註2'])
+            }
+
+            new_row_list = []
+            for header in sub_headers:
+                val = row_dict.get(header, "")
+                if not val:
+                    if header == "教科書(1)": val = row_dict.get("教科書(優先1)", "")
+                    elif header == "教科書(2)": val = row_dict.get("教科書(優先2)", "")
+                    elif header == "字號(1)": val = row_dict.get("審定字號(1)", "")
+                    elif header == "字號(2)": val = row_dict.get("審定字號(2)", "")
+                new_row_list.append(val)
+            
+            rows_to_append.append(new_row_list)
+
+        if rows_to_append:
+            ws_sub.append_rows(rows_to_append)
+            print(f"已補入 {len(rows_to_append)} 筆歷史資料")
+            return True 
+        
+        return True
+
+    except Exception as e:
+        st.error(f"同步歷史資料失敗: {e}")
+        return False
 
 # --- 5. 產生 PDF 報表 ---
 def create_pdf_report(dept):
@@ -914,7 +1000,6 @@ def auto_load_data():
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
     
-    # 修改：不只是 boolean，還要看是否有選擇具體的歷史學年度
     use_hist = st.session_state.get('use_history_checkbox', False)
     hist_year = st.session_state.get('history_year_val') if use_hist else None
     
@@ -990,13 +1075,10 @@ def main():
         with col1: sem = st.selectbox("學期", ["1", "2", "寒", "暑"], key='sem_val', on_change=auto_load_data)
         with col2: grade = st.selectbox("年級", ["1", "2", "3"], key='grade_val', on_change=auto_load_data)
         
-        # --- 修改歷史資料選擇 UI ---
+        # 歷史資料 UI
         current_year = st.session_state.get('current_school_year', '')
-        
-        # 1. 勾選框
         use_hist = st.checkbox("載入歷史資料", key='use_history_checkbox', on_change=auto_load_data)
         
-        # 2. 如果勾選，顯示年份選擇
         if use_hist:
             hist_years = get_history_years(current_year)
             if hist_years:
@@ -1020,6 +1102,18 @@ def main():
         if st.button("📄 轉 PDF 報表 (下載)", type="primary", use_container_width=True):
             if dept:
                 with st.spinner(f"正在處理 {dept} PDF..."):
+                    
+                    if st.session_state.get('use_history_checkbox'):
+                        hist_year_val = st.session_state.get('history_year_val')
+                        if hist_year_val:
+                            st.info(f"正在檢查並同步 {hist_year_val} 學年度缺漏資料...")
+                            sync_success = sync_history_to_db(dept, hist_year_val)
+                            
+                            if sync_success:
+                                st.success("✅ 同步完成 (保留已修改項目)")
+                            else:
+                                st.error("❌ 同步失敗")
+                    
                     pdf_report_bytes = create_pdf_report(dept)
                     
                     if pdf_report_bytes is not None:
@@ -1028,7 +1122,7 @@ def main():
                         href = f'<a href="data:application/pdf;base64,{b64}" download="{dept}_教科書總表.pdf" style="text-decoration:none; color:white; background-color:#b31412; padding:8px 12px; border-radius:5px; font-weight:bold; font-size:14px; display:block; text-align:center;">⬇️ 點此下載 PDF</a>'
                         st.markdown(href, unsafe_allow_html=True)
                     else:
-                        st.error("生成失敗，請檢查資料。")
+                        st.error("生成失敗，請檢查資料 (Submission 是否為空)。")
             else:
                 st.warning("請先選擇科別")
 
@@ -1191,7 +1285,6 @@ def main():
 
         st.success(f"目前編輯：**{dept}** / **{grade}年級** / **第{sem}學期**")
         
-        # 修正: use_container_width -> width='stretch'
         edited_df = st.data_editor(
             st.session_state['data'],
             num_rows="dynamic",
