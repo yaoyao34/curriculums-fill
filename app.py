@@ -108,11 +108,8 @@ def get_cloud_password():
     
     try:
         sh = client.open(SPREADSHEET_NAME)
-        # 嘗試開啟 Dashboard，如果沒有這個分頁會報錯
         ws = sh.worksheet("Dashboard")
         
-        # 讀取第二列 (資料列)
-        # 假設 A欄=學年度, B欄=密碼
         val_year = ws.cell(2, 1).value  # A2
         val_pwd = ws.cell(2, 2).value   # B2
         
@@ -165,16 +162,12 @@ def check_login():
     if st.session_state.get("logged_in"):
         with st.sidebar:
             st.divider()
-            # 顯示 Dashboard 設定的學年度
-            current_year = st.session_state.get('current_school_year', '未設定')
-            
-            # 使用 columns 排版：左邊顯示學年度，右邊顯示登出按鈕
             col_info, col_btn = st.columns([2, 1])
             with col_info:
-                # 這裡顯示的 current_year 就是登入時從 Dashboard A2 抓取的
-                st.markdown(f"##### 📅 學年度：{current_year}")
+                st.write(f"📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                if st.button("👋 登出", type="secondary", use_container_width=True):
+                # 修正: use_container_width -> width='stretch'
+                if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
 
@@ -196,7 +189,6 @@ def check_login():
         if submitted:
             if cloud_pwd and input_pwd == cloud_pwd:
                 st.session_state["logged_in"] = True
-                # 在登入成功時，將 Dashboard 讀到的學年度存入 Session
                 st.session_state["current_school_year"] = cloud_year
                 st.query_params["access_token"] = input_pwd
                 st.success("登入成功！")
@@ -453,7 +445,6 @@ def save_single_row(row_data, original_key=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_uuid = row_data.get('uuid')
     
-    # 存檔時使用「Dashboard 設定的目前學年度」
     current_school_year = st.session_state.get("current_school_year", "")
 
     data_dict = {
@@ -541,7 +532,6 @@ def sync_history_to_db(dept, history_year):
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 寫入時使用目前的學年度
         current_school_year = st.session_state.get("current_school_year", "")
         
         if not history_year:
@@ -1110,7 +1100,8 @@ def main():
         st.title("📚 教科書填報系統")
         
     with top_col2:
-        if st.button("📄 轉 PDF 報表 (下載)", type="primary", use_container_width=True):
+        # 修正: use_container_width -> width='stretch'
+        if st.button("📄 轉 PDF 報表 (下載)", type="primary", width="stretch"):
             if dept:
                 with st.spinner(f"正在處理 {dept} PDF..."):
                     
@@ -1234,7 +1225,8 @@ def main():
             with c_note2: input_note2 = st.text_input("備註2(作者/單價)", value=current_form['note2'])
 
             if is_edit_mode:
-                if st.button("🔄 更新表格 (存檔)", type="primary", use_container_width=True):
+                # 修正: use_container_width -> width='stretch'
+                if st.button("🔄 更新表格 (存檔)", type="primary", width="stretch"):
                     if not input_class_str or not input_book1 or not input_pub1 or not input_vol1:
                         st.error("⚠️ 適用班級、第一優先書名、冊次、出版社為必填！")
                     else:
@@ -1270,7 +1262,8 @@ def main():
                         st.success("✅ 更新並存檔成功！")
                         st.rerun()
             else:
-                if st.button("➕ 加入表格 (存檔)", type="primary", use_container_width=True):
+                # 修正: use_container_width -> width='stretch'
+                if st.button("➕ 加入表格 (存檔)", type="primary", width="stretch"):
                     if not input_class_str or not input_book1 or not input_pub1 or not input_vol1:
                         st.error("⚠️ 適用班級、第一優先書名、冊次、出版社為必填！")
                     else:
@@ -1300,7 +1293,7 @@ def main():
         edited_df = st.data_editor(
             st.session_state['data'],
             num_rows="dynamic",
-            use_container_width=True, 
+            width='stretch', 
             height=600,
             key=f"main_editor_{st.session_state['editor_key_counter']}",
             on_change=on_editor_change,
