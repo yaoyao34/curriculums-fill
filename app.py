@@ -104,6 +104,8 @@ def get_connection():
     return gspread.authorize(creds)
 
 # --- 新增功能：從 Google Sheet 取得雲端密碼 ---
+# 🔥 修正重點：加入 cache_data(ttl=600)，讓它每 10 分鐘才讀一次 API，解決 Quota Exceeded 問題
+@st.cache_data(ttl=600)
 def get_cloud_password():
     client = get_connection()
     if not client: return None, None
@@ -120,6 +122,8 @@ def get_cloud_password():
         
         return str(val_pwd).strip(), str(val_year).strip()
     except Exception as e:
+        # 為了避免 cache 住錯誤結果，這裡不回傳，讓它下次重試
+        # 但在 Streamlit 中直接報錯顯示
         st.error(f"讀取 Dashboard 密碼失敗: {e}")
         return None, None
 
@@ -136,22 +140,9 @@ def check_login():
     """
     回傳 True 表示已登入，False 表示未登入
     """
-    # 1. 取得雲端密碼
-    cloud_pwd, cloud_year = get_cloud_password()
-    
-    # 2. 檢查網址是否有 token (用於 F5 重整後保持登入)
-    # 使用 query_params 取得目前的參數
-    params = st.query_params
-    url_token = params.get("access_token", None)
-
-    # 如果網址有正確的 token，視為已登入
-    if url_token and url_token == cloud_pwd:
-        st.session_state["logged_in"] = True
-        st.session_state["current_school_year"] = cloud_year
-
-    # 3. 檢查 Session State
+    # 🔥 修正重點：若已經登入，直接回傳 True，完全不要去呼叫 get_cloud_password()
+    # 這能大幅減少不必要的 API 讀取
     if st.session_state.get("logged_in"):
-        # 已登入狀態，顯示登出按鈕在側邊欄
         with st.sidebar:
             st.divider()
             # === 修改排版：將學年度與登出按鈕並排 ===
@@ -163,6 +154,20 @@ def check_login():
                     logout()
             # ====================================
         return True
+
+    # 只有未登入時，才去快取中讀取密碼
+    cloud_pwd, cloud_year = get_cloud_password()
+    
+    # 2. 檢查網址是否有 token (用於 F5 重整後保持登入)
+    # 使用 query_params 取得目前的參數
+    params = st.query_params
+    url_token = params.get("access_token", None)
+
+    # 如果網址有正確的 token，視為已登入
+    if url_token and url_token == cloud_pwd:
+        st.session_state["logged_in"] = True
+        st.session_state["current_school_year"] = cloud_year
+        st.rerun() # 立即重整以刷新介面
 
     # --- 4. 顯示登入畫面 ---
     st.markdown("## 🔒 系統登入")
