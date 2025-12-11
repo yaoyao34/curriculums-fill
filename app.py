@@ -141,6 +141,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
+                # width='stretch' 取代 use_container_width
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -750,110 +751,6 @@ def on_preview_change():
             st.session_state['show_preview'] = False
             st.rerun()
 
-# --- 7. UI Callbacks ---
-def update_class_list_from_checkboxes():
-    dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
-    cur_set = set(st.session_state.get('class_multiselect', []))
-    def get_classes(sys_name):
-        prefix = {"1": "一", "2": "二", "3": "三"}.get(str(grade), "")
-        suffixes = DEPT_SPECIFIC_CONFIG[dept].get(sys_name, []) if dept in DEPT_SPECIFIC_CONFIG else ALL_SUFFIXES.get(sys_name, [])
-        return [f"{prefix}{s}" for s in suffixes] if not (str(grade)=="3" and sys_name=="建教班") else []
-
-    for k, name in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
-        if st.session_state[k]: cur_set.update(get_classes(name))
-        else: cur_set.difference_update(get_classes(name))
-    
-    final = sorted(list(cur_set))
-    st.session_state['active_classes'] = final
-    st.session_state['class_multiselect'] = final 
-    st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
-
-def toggle_all_checkboxes():
-    v = st.session_state['cb_all']
-    for k in ['cb_reg', 'cb_prac', 'cb_coop']: st.session_state[k] = v
-    update_class_list_from_checkboxes()
-
-def on_multiselect_change():
-    st.session_state['active_classes'] = st.session_state['class_multiselect']
-
-def on_editor_change():
-    key = f"main_editor_{st.session_state['editor_key_counter']}"
-    if key not in st.session_state: return
-    edits = st.session_state[key]["edited_rows"]
-    target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
-            
-    if target_idx is not None:
-        st.session_state['data']["勾選"] = False
-        st.session_state['data'].at[target_idx, "勾選"] = True
-        st.session_state['edit_index'] = target_idx
-        row = st.session_state['data'].iloc[target_idx]
-        st.session_state['original_key'] = {'科別': row['科別'], '年級': str(row['年級']), '學期': str(row['學期']), '課程名稱': row['課程名稱'], '適用班級': str(row.get('適用班級', ''))}
-        st.session_state['current_uuid'] = row.get('uuid')
-        st.session_state['form_data'] = {
-            'course': row["課程名稱"],
-            'book1': row.get("教科書(優先1)", ""), 'vol1': row.get("冊次(1)", ""), 'pub1': row.get("出版社(1)", ""), 'code1': row.get("審定字號(1)", ""),
-            'book2': row.get("教科書(優先2)", ""), 'vol2': row.get("冊次(2)", ""), 'pub2': row.get("出版社(2)", ""), 'code2': row.get("審定字號(2)", ""),
-            'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
-        }
-        cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
-        st.session_state['active_classes'] = cls_list
-        st.session_state['class_multiselect'] = cls_list
-        
-        dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
-        def get_cls(sys): 
-            p = {"1":"一","2":"二","3":"三"}.get(str(grade),"")
-            sufs = DEPT_SPECIFIC_CONFIG[dept].get(sys,[]) if dept in DEPT_SPECIFIC_CONFIG else ALL_SUFFIXES.get(sys,[])
-            return [f"{p}{s}" for s in sufs]
-        
-        for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
-            tgts = get_cls(sys)
-            st.session_state[k] = any(c in cls_list for c in tgts) if tgts else False
-        st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
-    
-    else:
-        idx = st.session_state.get('edit_index')
-        if idx is not None and str(idx) in edits and edits[str(idx)].get("勾選") is False:
-            st.session_state['data'].at[idx, "勾選"] = False
-            st.session_state['edit_index'] = None
-            st.session_state['current_uuid'] = None
-
-def auto_load_data():
-    dept = st.session_state.get('dept_val')
-    sem = st.session_state.get('sem_val')
-    grade = st.session_state.get('grade_val')
-    
-    use_hist = st.session_state.get('use_history_checkbox', False)
-    hist_year = None
-
-    if use_hist:
-        val_in_state = st.session_state.get('history_year_val')
-        if val_in_state:
-            hist_year = val_in_state
-        else:
-            curr = st.session_state.get('current_school_year', '')
-            available_years = get_history_years(curr)
-            if available_years:
-                hist_year = available_years[0] 
-
-    if dept and sem and grade:
-        df = load_data(dept, sem, grade, hist_year)
-        st.session_state['data'] = df
-        st.session_state['loaded'] = True
-        st.session_state['edit_index'] = None
-        st.session_state['original_key'] = None
-        st.session_state['current_uuid'] = None
-        st.session_state['active_classes'] = []
-        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
-        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
-        
-        is_spec = dept in DEPT_SPECIFIC_CONFIG
-        st.session_state['cb_reg'] = True
-        st.session_state['cb_prac'] = not is_spec
-        st.session_state['cb_coop'] = not is_spec
-        st.session_state['cb_all'] = not is_spec
-        update_class_list_from_checkboxes()
-        st.session_state['editor_key_counter'] += 1
-
 # --- 8. 主程式 ---
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
@@ -926,7 +823,14 @@ def main():
                 width='stretch',
                 column_config={
                     "勾選": st.column_config.CheckboxColumn("編輯", width="small"),
-                    "uuid": None, "填報時間": None, "學年度": None
+                    "uuid": None, "填報時間": None, "學年度": None,
+                    "學期": st.column_config.TextColumn("學期", width="small"),
+                    "年級": st.column_config.TextColumn("年級", width="small"),
+                    "課程名稱": st.column_config.TextColumn("課程名稱", width="medium"),
+                    "教科書(優先1)": st.column_config.TextColumn("教科書", width="medium"),
+                    "出版社(1)": st.column_config.TextColumn("出版社", width="small"),
+                    "適用班級": st.column_config.TextColumn("適用班級", width="medium"),
+                    "備註1": st.column_config.TextColumn("備註", width="small"),
                 },
                 disabled=["科別", "學期", "年級", "課程名稱", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "教科書(優先2)", "冊次(2)", "出版社(2)", "審定字號(2)", "適用班級", "備註1", "備註2"],
                 column_order=["勾選", "學期", "年級", "課程名稱", "教科書(優先1)", "出版社(1)", "適用班級", "備註1"]
