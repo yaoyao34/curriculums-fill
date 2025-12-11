@@ -141,7 +141,6 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                # width='stretch' 取代 use_container_width
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -231,7 +230,7 @@ def load_data(dept, semester, grade, history_year=None):
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 直接篩選科別 (DB_History 已有科別欄位)
+                # 直接篩選科別
                 if '科別' not in df_hist.columns:
                     st.error("歷史資料庫缺少'科別'欄位，無法載入。")
                     return pd.DataFrame()
@@ -735,22 +734,27 @@ def auto_load_data():
                 hist_year = available_years[0] 
 
     if dept and sem and grade:
-        df = load_data(dept, sem, grade, hist_year)
-        st.session_state['data'] = df
-        st.session_state['loaded'] = True
-        st.session_state['edit_index'] = None
-        st.session_state['original_key'] = None
-        st.session_state['current_uuid'] = None
+        # 重置班級選擇狀態
         st.session_state['active_classes'] = []
-        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
-        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
+        st.session_state['class_multiselect'] = []
         
         is_spec = dept in DEPT_SPECIFIC_CONFIG
         st.session_state['cb_reg'] = True
         st.session_state['cb_prac'] = not is_spec
         st.session_state['cb_coop'] = not is_spec
         st.session_state['cb_all'] = not is_spec
+
         update_class_list_from_checkboxes()
+
+        df = load_data(dept, sem, grade, hist_year)
+        st.session_state['data'] = df
+        st.session_state['loaded'] = True
+        st.session_state['edit_index'] = None
+        st.session_state['original_key'] = None
+        st.session_state['current_uuid'] = None
+        
+        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
+        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
         st.session_state['editor_key_counter'] += 1
 
 def update_class_list_from_checkboxes():
@@ -856,7 +860,7 @@ def on_preview_change():
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
-            st.rerun()
+            # REMOVED st.rerun() to fix no-op warning
 
 # --- 8. 主程式 ---
 def main():
