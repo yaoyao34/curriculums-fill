@@ -169,7 +169,7 @@ def check_login():
                 st.error("❌ 通行碼錯誤。")
     return False
     
-# --- 2. 資料讀取 ---
+# --- 2. 資料讀取 (編輯器用：單一年級/學期) ---
 def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
     if not client: return pd.DataFrame()
@@ -230,7 +230,6 @@ def load_data(dept, semester, grade, history_year=None):
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 直接篩選科別
                 if '科別' not in df_hist.columns:
                     st.error("歷史資料庫缺少'科別'欄位，無法載入。")
                     return pd.DataFrame()
@@ -245,25 +244,21 @@ def load_data(dept, semester, grade, history_year=None):
                 target_hist = df_hist[mask_hist]
 
                 for _, h_row in target_hist.iterrows():
-                    # 🔥 關鍵修正：保持 History 的 UUID
                     h_uuid = str(h_row.get('uuid', '')).strip()
                     if not h_uuid: h_uuid = str(uuid.uuid4())
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
-                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
-                        # Submission 有 -> 載入 Submission 的資料 (使用者修改過的)
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
-                        # Submission 沒有 -> 載入 History 資料 (預設)
                         row_data = h_row.to_dict()
-                        row_data['uuid'] = h_uuid # 保持原 UUID
+                        row_data['uuid'] = h_uuid 
                         row_data['勾選'] = False
                         for k, alt in {'教科書(優先1)': '教科書(1)', '審定字號(1)': '字號(1)', '審定字號(2)': '字號(2)'}.items():
                             if alt in row_data and k not in row_data: row_data[k] = row_data[alt]
@@ -338,19 +333,23 @@ def load_data(dept, semester, grade, history_year=None):
         st.error(f"讀取錯誤 (Detail): {e}")
         return pd.DataFrame()
 
-# --- 新增功能：讀取整科的所有 Submission 資料 (供預覽用) ---
-def load_all_submission_data(dept):
+# --- 新增功能：預覽資料 (邏輯修正：記憶體合併，不寫入 DB) ---
+def load_preview_data(dept):
     client = get_connection()
     if not client: return pd.DataFrame()
+    
+    # 1. 讀取 Submission (已存檔資料)
     try:
         sh = client.open(SPREADSHEET_NAME)
         ws_sub = sh.worksheet(SHEET_SUBMISSION)
-        
         data = ws_sub.get_all_values()
-        if not data: return pd.DataFrame()
+    except:
+        return pd.DataFrame() # 無法讀取
+
+    df_sub = pd.DataFrame()
+    if data:
         headers = data[0]
         rows = data[1:]
-        
         mapping = {
             '教科書(1)': '教科書(優先1)', '教科書': '教科書(優先1)',
             '字號(1)': '審定字號(1)', '字號': '審定字號(1)', '審定字號': '審定字號(1)',
@@ -371,20 +370,60 @@ def load_all_submission_data(dept):
                 if final_name == '備註': new_headers.append('備註1')
                 else: new_headers.append(final_name)
         
-        df = pd.DataFrame(rows, columns=new_headers)
-        if df.empty: return df
+        df_sub = pd.DataFrame(rows, columns=new_headers)
+        if '科別' in df_sub.columns:
+            df_sub = df_sub[df_sub['科別'] == dept].copy()
+    
+    # 2. 檢查是否勾選歷史資料
+    use_hist = st.session_state.get('use_history_checkbox', False)
+    hist_year = st.session_state.get('history_year_val')
+    
+    df_final = df_sub
+    
+    # 3. 如果勾選歷史資料 -> 進行記憶體合併 (不寫入)
+    if use_hist and hist_year:
+        try:
+            ws_hist = sh.worksheet(SHEET_HISTORY)
+            data_hist = ws_hist.get_all_values()
+            if data_hist:
+                h_headers = data_hist[0]
+                h_rows = data_hist[1:]
+                
+                # 簡單標準化
+                df_hist = pd.DataFrame(h_rows, columns=h_headers)
+                
+                # 欄位映射
+                df_hist.rename(columns=mapping, inplace=True)
+                
+                if '科別' in df_hist.columns and '學年度' in df_hist.columns:
+                     # 篩選 History
+                     target_hist = df_hist[
+                        (df_hist['科別'] == dept) & 
+                        (df_hist['學年度'] == str(hist_year))
+                     ].copy()
+                     
+                     if not target_hist.empty:
+                         # 移除 Submission 已有的 UUID
+                         existing_uuids = set(df_sub['uuid'].astype(str)) if not df_sub.empty and 'uuid' in df_sub.columns else set()
+                         
+                         target_hist = target_hist[~target_hist['uuid'].isin(existing_uuids)]
+                         
+                         # 合併 (Submission + History剩餘部分)
+                         df_final = pd.concat([df_sub, target_hist], ignore_index=True)
+        except Exception:
+            pass # 讀取歷史失敗則只顯示 Submission
+
+    if df_final.empty: return pd.DataFrame()
+
+    # 確保勾選欄位
+    if '勾選' not in df_final.columns:
+        df_final.insert(0, "勾選", False)
         
-        if '科別' in df.columns:
-            df = df[df['科別'] == dept].copy()
-        
-        df.insert(0, "勾選", False)
-        
-        if '年級' in df.columns and '課程名稱' in df.columns:
-             df = df.sort_values(by=['年級', '學期', '課程名稱'], ascending=[True, True, True]).reset_index(drop=True)
-             
-        return df
-    except Exception:
-        return pd.DataFrame()
+    # 排序
+    if '年級' in df_final.columns and '學期' in df_final.columns and '課程名稱' in df_final.columns:
+         df_final = df_final.sort_values(by=['年級', '學期', '課程名稱'], ascending=[True, True, True]).reset_index(drop=True)
+         
+    return df_final
 
 def get_course_list():
     if 'data' in st.session_state and not st.session_state['data'].empty:
@@ -823,6 +862,7 @@ def on_editor_change():
             st.session_state['edit_index'] = None
             st.session_state['current_uuid'] = None
 
+# --- 新增功能：預覽資料編輯回呼 ---
 def on_preview_change():
     key = "preview_editor"
     if key not in st.session_state: return
@@ -841,7 +881,13 @@ def on_preview_change():
         auto_load_data()
         
         current_df = st.session_state['data']
+        # 1. 嘗試用 UUID 找
         matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
+        
+        # 2. 如果 UUID 找不到 (可能因為是未存檔的預設課程，載入後產生了新 UUID)
+        if not matching_indices:
+            target_course = row['課程名稱']
+            matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
         
         if matching_indices:
             new_idx = matching_indices[0]
@@ -860,7 +906,7 @@ def on_preview_change():
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
-            # REMOVED st.rerun() to fix no-op warning
+            # 已移除 st.rerun()
 
 # --- 8. 主程式 ---
 def main():
@@ -921,9 +967,10 @@ def main():
         st.info("💡 勾選任一列可跳轉至該課程進行編輯。")
         if st.session_state.get('use_history_checkbox'):
             hist_year = st.session_state.get('history_year_val')
-            if hist_year: sync_history_to_db(dept, hist_year)
+            # 預覽時不寫入，僅讀取合併
+            pass 
         
-        df_prev = load_all_submission_data(dept)
+        df_prev = load_preview_data(dept)
         st.session_state['preview_df'] = df_prev
         
         if not df_prev.empty:
