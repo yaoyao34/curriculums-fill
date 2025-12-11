@@ -895,6 +895,7 @@ def on_editor_change():
         if str(current_idx) in edits and edits[str(current_idx)].get("勾選") is False:
             unchecked_current = True
 
+    # 狀況 A: 使用者取消了目前的勾選 -> 退出編輯模式
     if unchecked_current:
         st.session_state['data'].at[current_idx, "勾選"] = False
         st.session_state['edit_index'] = None
@@ -904,8 +905,11 @@ def on_editor_change():
         st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
         st.session_state['active_classes'] = []
         st.session_state['class_multiselect'] = []
+        # 🔥 強制刷新介面，防止狀態殘留
+        st.session_state['editor_key_counter'] += 1
         return
 
+    # 狀況 B: 使用者勾選了新的一列
     if new_checked_idx is not None:
         if current_idx is not None and current_idx != new_checked_idx:
             st.session_state['data'].at[current_idx, "勾選"] = False
@@ -927,8 +931,6 @@ def on_editor_change():
             'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
         }
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
-        
-        # ⬇️ 這裡正確地載入了班級，且不呼叫 update_class_list_from_checkboxes
         st.session_state['original_classes'] = cls_list 
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
@@ -1049,6 +1051,7 @@ def main():
         with c_prev:
             if st.button("👁️ 預覽 PDF 資料", width="stretch"):
                 st.session_state['show_preview'] = not st.session_state['show_preview']
+                # 🔥 切換預覽時，強制取消當前的編輯狀態
                 if st.session_state.get('edit_index') is not None:
                     if 'data' in st.session_state and not st.session_state['data'].empty:
                          st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
