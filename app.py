@@ -141,7 +141,6 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -209,28 +208,25 @@ def load_data(dept, semester, grade, history_year=None):
         df_curr = get_df(ws_curr) 
 
         if not df_sub.empty:
-            for col in ['年級', '學期', '科別']: df_sub[col] = df_sub[col].astype(str)
+            for col in ['年級', '學期', '科別']: df_sub[col] = df_sub[col].astype(str).str.strip()
+            # 🔥 確保 UUID 清淨
+            if 'uuid' in df_sub.columns: df_sub['uuid'] = df_sub['uuid'].astype(str).str.strip()
         
         category_map = {}
-        # --- NEW: 提取課綱中的標準課程清單，用於下拉選單聯集 ---
         curr_course_options = []
 
         if not df_curr.empty:
-            for col in ['年級', '學期', '科別']: df_curr[col] = df_curr[col].astype(str)
+            for col in ['年級', '學期', '科別']: df_curr[col] = df_curr[col].astype(str).str.strip()
             target_dept_curr = df_curr[df_curr['科別'] == dept]
             
-            # 建立類別對照表
             for _, row in target_dept_curr.iterrows():
                 k = (row['課程名稱'], str(row['年級']), str(row['學期']))
                 category_map[k] = row['課程類別']
             
-            # 建立當前學期年級的課綱課程清單
             mask_opts = (df_curr['科別'] == str(dept)) & (df_curr['學期'] == str(semester)) & (df_curr['年級'] == str(grade))
             curr_course_options = df_curr[mask_opts]['課程名稱'].unique().tolist()
         
-        # 存入 Session State 供 get_course_list 使用
         st.session_state['curr_course_options'] = curr_course_options
-        # --------------------------------------------------
 
         display_rows = []
         displayed_uuids = set()
@@ -263,17 +259,14 @@ def load_data(dept, semester, grade, history_year=None):
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
-                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
-                        # Submission 有 -> 載入 Submission 的資料
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
-                        # Submission 沒有 -> 載入 History 資料
                         row_data = h_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
@@ -307,8 +300,8 @@ def load_data(dept, semester, grade, history_year=None):
                     if not sub_matches.empty:
                         for _, s_row in sub_matches.iterrows():
                             if check_class_match(default_class, str(s_row.get('適用班級', ''))):
-                                s_uuid = s_row.get('uuid')
-                                if s_uuid not in displayed_uuids:
+                                s_uuid = str(s_row.get('uuid')).strip()
+                                if s_uuid and s_uuid not in displayed_uuids:
                                     s_data = s_row.to_dict()
                                     s_data['勾選'] = False
                                     s_data['課程類別'] = c_type
@@ -331,7 +324,7 @@ def load_data(dept, semester, grade, history_year=None):
             mask_orphan = (df_sub['科別'] == dept) & (df_sub['學期'] == str(semester)) & (df_sub['年級'] == str(grade))
             orphan_subs = df_sub[mask_orphan]
             for _, s_row in orphan_subs.iterrows():
-                s_uuid = s_row.get('uuid')
+                s_uuid = str(s_row.get('uuid')).strip()
                 if s_uuid and s_uuid not in displayed_uuids:
                     s_data = s_row.to_dict()
                     s_data['勾選'] = False
@@ -424,9 +417,10 @@ def load_preview_data(dept):
                      ].copy()
                      
                      if not target_hist.empty:
-                         existing_uuids = set(df_sub['uuid'].astype(str)) if not df_sub.empty and 'uuid' in df_sub.columns else set()
+                         existing_uuids = set(df_sub['uuid'].astype(str).str.strip()) if not df_sub.empty and 'uuid' in df_sub.columns else set()
                          if 'uuid' in target_hist.columns:
-                            target_hist = target_hist[~target_hist['uuid'].astype(str).isin(existing_uuids)]
+                            target_hist['uuid'] = target_hist['uuid'].astype(str).str.strip()
+                            target_hist = target_hist[~target_hist['uuid'].isin(existing_uuids)]
                          
                          df_final = pd.concat([df_sub, target_hist], ignore_index=True)
         except Exception:
@@ -444,16 +438,11 @@ def load_preview_data(dept):
 
 def get_course_list():
     courses = set()
-    
-    # 1. 現有表格中的資料 (包含歷史紀錄或 Submission)
     if 'data' in st.session_state and not st.session_state['data'].empty:
         if '課程名稱' in st.session_state['data'].columns:
             courses.update(st.session_state['data']['課程名稱'].unique().tolist())
-
-    # 2. 課綱中的標準資料 (聯集)
     if 'curr_course_options' in st.session_state:
         courses.update(st.session_state['curr_course_options'])
-
     return sorted(list(courses))
 
 # --- 4. 存檔 ---
@@ -554,7 +543,7 @@ def sync_history_to_db(dept, history_year):
 
         data_sub = ws_sub.get_all_records()
         df_sub = pd.DataFrame(data_sub)
-        existing_uuids = set(df_sub['uuid'].astype(str).tolist()) if not df_sub.empty else set()
+        existing_uuids = set(df_sub['uuid'].astype(str).str.strip().tolist()) if not df_sub.empty else set()
 
         sub_headers = ws_sub.row_values(1)
         if not sub_headers:
@@ -570,7 +559,6 @@ def sync_history_to_db(dept, history_year):
             st.error("History 缺少'科別'欄位")
             return False
 
-        # 🔥 修正：確保篩選無誤 (去除空白)
         target_rows = df_hist[
             (df_hist['學年度'].str.strip() == str(history_year).strip()) & 
             (df_hist['科別'].str.strip() == dept.strip())
@@ -618,16 +606,12 @@ def create_pdf_report(dept):
 
     class PDF(FPDF):
         def header(self):
-            # 🔥 關閉自動分頁，防止標題繪製時亂跳頁
             self.set_auto_page_break(False)
-            
             self.set_font(CHINESE_FONT, 'B', 18) 
             self.cell(0, 10, f'{dept} {current_year}學年度 教科書選用總表', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             self.set_font(CHINESE_FONT, '', 10)
             self.cell(0, 5, f"列印時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='R')
             self.ln(5)
-            
-            # 🔥 標題繪製完畢，恢復自動分頁 (margin=15mm)
             self.set_auto_page_break(True, margin=15)
 
         def footer(self):
@@ -681,7 +665,6 @@ def create_pdf_report(dept):
     col_widths = [28, 73, 53, 11, 29, 38, 33, 11 ]
     col_names = ["課程名稱", "適用班級", "教科書", "冊次", "出版社", "審定字號", "備註", "核定"]
     
-    # 🔥 室設科特殊欄寬：只交換寬度
     if dept == "室設科":
         col_widths[1] = 19   # 班級
         col_widths[2] = 107  # 教科書
@@ -689,10 +672,8 @@ def create_pdf_report(dept):
     LINE_HEIGHT = 5.5 
     
     def render_table_header(pdf):
-        # 繪製表頭時也暫時關閉自動分頁，比較保險
         auto_pb = pdf.auto_page_break
         pdf.set_auto_page_break(False)
-        
         pdf.set_font(CHINESE_FONT, 'B', 12) 
         pdf.set_fill_color(220, 220, 220)
         start_x = pdf.get_x()
@@ -703,8 +684,6 @@ def create_pdf_report(dept):
             start_x += w
         pdf.set_xy(pdf.l_margin, start_y + 8) 
         pdf.set_font(CHINESE_FONT, '', 12) 
-        
-        # 恢復自動分頁
         if auto_pb: pdf.set_auto_page_break(True, margin=15)
 
     for sem in sorted(df['學期'].unique()):
@@ -724,32 +703,18 @@ def create_pdf_report(dept):
                 v2, p2 = str(row.get('冊次(2)', '')).strip(), str(row.get('出版社(2)', '')).strip()
                 c2 = str(row.get('審定字號(2)') or row.get('字號(2)', '')).strip()
                 has_priority_2 = (b2 != "" or v2 != "")
-                
-                # 🔥 強制移除換行
                 def clean(s): return s.replace('\r', '').replace('\n', ' ')
-                
-                # P1 資料
-                p1_data = [
-                    str(row['課程名稱']), str(row['適用班級']),
-                    clean(b1), clean(v1), clean(p1), clean(c1), clean(r1), ""
-                ]
-                
-                # P2 資料
-                p2_data = [
-                    "", "", # 課程/班級不重複顯示
-                    clean(b2), clean(v2), clean(p2), clean(c2), clean(r2), ""
-                ]
+                p1_data = [str(row['課程名稱']), str(row['適用班級']), clean(b1), clean(v1), clean(p1), clean(c1), clean(r1), ""]
+                p2_data = ["", "", clean(b2), clean(v2), clean(p2), clean(c2), clean(r2), ""]
 
                 pdf.set_font(CHINESE_FONT, '', 12) 
-                
-                # 計算每一欄需要的高度 (P1 vs P2)
                 lines_p1 = []
                 for i, text in enumerate(p1_data):
                     w = col_widths[i]
                     txt_w = pdf.get_string_width(text)
                     lines = math.ceil(txt_w / (w-2)) if txt_w > 0 else 1
                     if text == "": lines = 0
-                    if i in [0, 1]: lines = 0 # 課程/班級高度另外算
+                    if i in [0, 1]: lines = 0
                     lines_p1.append(lines)
                 
                 lines_p2 = []
@@ -760,7 +725,6 @@ def create_pdf_report(dept):
                     if text == "": lines = 0
                     lines_p2.append(lines)
                 
-                # 課程與班級高度 (根據內容)
                 lines_common = []
                 for i in [0, 1]:
                     w = col_widths[i]
@@ -772,15 +736,10 @@ def create_pdf_report(dept):
                 max_h_p1 = max(lines_p1) * LINE_HEIGHT + 2
                 max_h_p2 = max(lines_p2) * LINE_HEIGHT + 2 if has_priority_2 else 0
                 max_h_common = max(lines_common) * LINE_HEIGHT + 4
-                
-                # 最小高度限制 (給 Checkbox 空間)
                 if max_h_p1 < 6: max_h_p1 = 6
                 if has_priority_2 and max_h_p2 < 6: max_h_p2 = 6
-                
-                # 總列高
                 row_h = max(max_h_common, max_h_p1 + max_h_p2)
                 
-                # 分頁判斷
                 if pdf.get_y() + row_h > pdf.page_break_trigger:
                     pdf.add_page()
                     pdf.set_font(CHINESE_FONT, 'B', 14)
@@ -789,51 +748,39 @@ def create_pdf_report(dept):
                     render_table_header(pdf)
                     
                 start_x, start_y = pdf.get_x(), pdf.get_y()
-                
                 for i in range(8):
                     w = col_widths[i]
                     pdf.set_xy(start_x, start_y)
-                    pdf.cell(w, row_h, "", border=1) # 畫外框
+                    pdf.cell(w, row_h, "", border=1)
                     
-                    if i in [0, 1]: # 課程 & 班級 (垂直置中)
+                    if i in [0, 1]:
                         y_pos = start_y + (row_h - lines_common[i]*LINE_HEIGHT)/2
                         pdf.set_xy(start_x, y_pos)
                         pdf.multi_cell(w, LINE_HEIGHT, p1_data[i], border=0, align='C' if i==1 else 'L')
-                    
-                    elif i == 7: # 核定欄
+                    elif i == 7:
                         w_chk = w
                         box_sz = 4
                         box_x = start_x + (w_chk - box_sz)/2 - 2
-                        
-                        # P1 Checkbox
                         y_box1 = start_y + (max_h_p1 - box_sz)/2
                         pdf.rect(box_x, y_box1, box_sz, box_sz)
                         pdf.set_xy(box_x + box_sz + 1, y_box1)
                         pdf.set_font(CHINESE_FONT, '', 8)
                         pdf.cell(5, box_sz, "1", border=0)
-                        
                         if has_priority_2:
                             y_box2 = start_y + max_h_p1 + (max_h_p2 - box_sz)/2
                             pdf.rect(box_x, y_box2, box_sz, box_sz)
                             pdf.set_xy(box_x + box_sz + 1, y_box2)
                             pdf.cell(5, box_sz, "2", border=0)
-                        
                         pdf.set_font(CHINESE_FONT, '', 12)
-
-                    else: # 書籍資訊 (分上下兩層)
-                        # P1
+                    else:
                         y_pos1 = start_y + (max_h_p1 - lines_p1[i]*LINE_HEIGHT)/2
                         pdf.set_xy(start_x, y_pos1)
                         pdf.multi_cell(w, LINE_HEIGHT, p1_data[i], border=0, align='C' if i==3 else 'L')
-                        
                         if has_priority_2:
-                            # P2 (起始位置是 start_y + P1高度)
                             y_pos2 = start_y + max_h_p1 + (max_h_p2 - lines_p2[i]*LINE_HEIGHT)/2
                             pdf.set_xy(start_x, y_pos2)
                             pdf.multi_cell(w, LINE_HEIGHT, p2_data[i], border=0, align='C' if i==3 else 'L')
-
                     start_x += w
-
                 pdf.set_y(start_y + row_h)
             pdf.ln(5) 
     
@@ -855,60 +802,48 @@ def auto_load_data():
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
     
-    # 編輯模式下不重載資料 (除非科別變更)
     if st.session_state.get('edit_index') is not None:
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
         elif st.session_state.get('last_grade') != grade:
-            # 🔥 關鍵：檢查是否切回原年級
             orig = st.session_state.get('original_key')
-            
             if orig and str(orig.get('年級')) == str(grade):
-                # 切回原本的年級 -> 恢復
                 restored_classes = st.session_state.get('original_classes', [])
                 st.session_state['active_classes'] = restored_classes
                 st.session_state['class_multiselect'] = restored_classes
             else:
-                # 切到不同年級 -> 清空
                 st.session_state['active_classes'] = []
                 st.session_state['class_multiselect'] = []
                 st.session_state['cb_reg'] = False
                 st.session_state['cb_prac'] = False
                 st.session_state['cb_coop'] = False
                 st.session_state['cb_all'] = False
-            
             st.session_state['last_grade'] = grade
-            update_class_list_from_checkboxes() # 🔥 恢復後要重新計算勾選框
+            update_class_list_from_checkboxes()
             return 
-        else:
-            return
+        else: return
 
     st.session_state['last_dept'] = dept
     st.session_state['last_grade'] = grade
 
     use_hist = st.session_state.get('use_history_checkbox', False)
     hist_year = None
-
     if use_hist:
         val_in_state = st.session_state.get('history_year_val')
-        if val_in_state:
-            hist_year = val_in_state
+        if val_in_state: hist_year = val_in_state
         else:
             curr = st.session_state.get('current_school_year', '')
             available_years = get_history_years(curr)
-            if available_years:
-                hist_year = available_years[0] 
+            if available_years: hist_year = available_years[0] 
 
     if dept and sem and grade:
         st.session_state['active_classes'] = []
         st.session_state['class_multiselect'] = []
-        
         is_spec = dept in DEPT_SPECIFIC_CONFIG
         st.session_state['cb_reg'] = True
         st.session_state['cb_prac'] = not is_spec
         st.session_state['cb_coop'] = not is_spec
         st.session_state['cb_all'] = not is_spec
-
         update_class_list_from_checkboxes()
 
         df = load_data(dept, sem, grade, hist_year)
@@ -950,36 +885,31 @@ def on_multiselect_change():
 def on_editor_change():
     key = f"main_editor_{st.session_state['editor_key_counter']}"
     if key not in st.session_state: return
-    
     edits = st.session_state[key]["edited_rows"]
     
     # 1. 檢查是否有被「勾選 (True)」的列
     new_checked_idx = next((int(i) for i, c in edits.items() if c.get("勾選") is True), None)
     
-    # 2. 檢查是否有被「取消勾選 (False)」的列 (針對目前正在編輯的列)
+    # 2. 檢查是否有被「取消勾選 (False)」的列
     current_idx = st.session_state.get('edit_index')
     unchecked_current = False
     if current_idx is not None:
-        # 如果目前編輯的列在這次變更中變成了 False
         if str(current_idx) in edits and edits[str(current_idx)].get("勾選") is False:
             unchecked_current = True
 
-    # === 邏輯分支 ===
-    
     # 狀況 A: 使用者取消了目前的勾選 -> 退出編輯模式
     if unchecked_current:
         st.session_state['data'].at[current_idx, "勾選"] = False
         st.session_state['edit_index'] = None
         st.session_state['current_uuid'] = None
         st.session_state['original_key'] = None
-        # 清空表單
         st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
         st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
         st.session_state['active_classes'] = []
         st.session_state['class_multiselect'] = []
         return
 
-    # 狀況 B: 使用者勾選了新的一列 -> 進入編輯模式
+    # 狀況 B: 使用者勾選了新的一列
     if new_checked_idx is not None:
         # 如果之前有勾選別的，先把它取消掉 (單選邏輯)
         if current_idx is not None and current_idx != new_checked_idx:
@@ -989,32 +919,23 @@ def on_editor_change():
         st.session_state['edit_index'] = new_checked_idx
         
         row = st.session_state['data'].iloc[new_checked_idx]
-        
-        # 保存原始 Key 用於存檔比對
         st.session_state['original_key'] = {
-            '科別': row['科別'], 
-            '年級': str(row['年級']), 
-            '學期': str(row['學期']), 
-            '課程名稱': row['課程名稱'], 
-            '適用班級': str(row.get('適用班級', ''))
+            '科別': row['科別'], '年級': str(row['年級']), '學期': str(row['學期']), 
+            '課程名稱': row['課程名稱'], '適用班級': str(row.get('適用班級', ''))
         }
-        st.session_state['current_uuid'] = row.get('uuid')
+        st.session_state['current_uuid'] = str(row.get('uuid')).strip()
         
-        # 載入表單資料
         st.session_state['form_data'] = {
             'course': row["課程名稱"],
             'book1': row.get("教科書(優先1)", ""), 'vol1': row.get("冊次(1)", ""), 'pub1': row.get("出版社(1)", ""), 'code1': row.get("審定字號(1)", ""),
             'book2': row.get("教科書(優先2)", ""), 'vol2': row.get("冊次(2)", ""), 'pub2': row.get("出版社(2)", ""), 'code2': row.get("審定字號(2)", ""),
             'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
         }
-        
-        # 處理班級
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
         st.session_state['original_classes'] = cls_list 
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
         
-        # 自動設定 Checkbox
         dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
         cls_set = set(cls_list)
         for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
@@ -1022,60 +943,53 @@ def on_editor_change():
             st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
         st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
 
-# --- 新增功能：預覽資料編輯回呼 ---
 def on_preview_change():
     key = "preview_editor"
     if key not in st.session_state: return
     edits = st.session_state[key]["edited_rows"]
-    
-    # 找出被勾選的那一列 (在預覽表中)
     target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
     
     if target_idx is not None:
-        # 1. 從預覽表獲取目標資料
+        # 1. 確保先清除舊的編輯狀態
+        if st.session_state.get('edit_index') is not None:
+            if 'data' in st.session_state and not st.session_state['data'].empty:
+                 st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
+            st.session_state['edit_index'] = None
+            st.session_state['current_uuid'] = None
+
         df_preview = st.session_state['preview_df']
         row = df_preview.iloc[target_idx]
-        
         target_grade = str(row['年級'])
         target_sem = str(row['學期'])
-        target_uuid = str(row.get('uuid', '')).strip() # 關鍵：取得 UUID
+        target_uuid = str(row.get('uuid', '')).strip() 
         
-        # 2. 切換主畫面的年級與學期設定
         st.session_state['grade_val'] = target_grade
         st.session_state['sem_val'] = target_sem
         st.session_state['last_grade'] = target_grade 
         
-        # 3. 強制重新載入主表資料 (這時 st.session_state['data'] 會變成目標年級的資料)
+        # 2. 重新載入主畫面資料
         auto_load_data()
         
-        # 4. 在重新載入的主表中，尋找該 UUID 的位置
         current_df = st.session_state['data']
         matching_indices = []
-        
         if target_uuid:
-            # 優先使用 UUID 比對 (最準確)
             matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
         
-        # 如果 UUID 找不到 (極少見，可能是資料同步落差)，退而求其次用課程名稱比對
         if not matching_indices:
             target_course = row['課程名稱']
             matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
         
-        # 5. 鎖定編輯狀態
         if matching_indices:
-            new_idx = matching_indices[0] # 抓到主表對應的那一列
-            
-            # 設定主表該列為勾選狀態
+            new_idx = matching_indices[0]
             st.session_state['data'].at[new_idx, "勾選"] = True
             st.session_state['edit_index'] = new_idx
             
-            # 載入編輯資料
             row_data = current_df.iloc[new_idx]
             st.session_state['original_key'] = {
                 '科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), 
                 '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))
             }
-            st.session_state['current_uuid'] = row_data.get('uuid')
+            st.session_state['current_uuid'] = str(row_data.get('uuid')).strip()
             st.session_state['form_data'] = {
                 'course': row_data["課程名稱"],
                 'book1': row_data.get("教科書(優先1)", ""), 'vol1': row_data.get("冊次(1)", ""), 'pub1': row_data.get("出版社(1)", ""), 'code1': row_data.get("審定字號(1)", ""),
@@ -1083,18 +997,12 @@ def on_preview_change():
                 'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
             }
             cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
-            
             st.session_state['original_classes'] = cls_list
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
-            
-            # 🔥 關閉預覽視窗，讓使用者專心編輯
             st.session_state['show_preview'] = False
-            
-            # 更新 Checkbox 狀態
             update_class_list_from_checkboxes()
-            
-            # 強制讓主編輯器重新渲染以顯示勾選
+            # 🔥 強制刷新主編輯器 Key，確保勾選狀態正確顯示
             st.session_state['editor_key_counter'] += 1
 
 # --- 8. 主程式 ---
@@ -1134,21 +1042,15 @@ def main():
         c_prev, c_pdf = st.columns(2)
         with c_prev:
             if st.button("👁️ 預覽 PDF 資料", width="stretch"):
-                # 切換顯示狀態
                 st.session_state['show_preview'] = not st.session_state['show_preview']
-                
-                # 🔥 重點：如果正在編輯中，強制取消編輯狀態
+                # 🔥 切換預覽時，強制取消當前的編輯狀態
                 if st.session_state.get('edit_index') is not None:
-                    # 取消主表勾選
-                    current_idx = st.session_state['edit_index']
                     if 'data' in st.session_state and not st.session_state['data'].empty:
-                         st.session_state['data'].at[current_idx, "勾選"] = False
-                    
-                    # 清空狀態
+                         st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
                     st.session_state['edit_index'] = None
                     st.session_state['current_uuid'] = None
                     st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
-                    st.session_state['editor_key_counter'] += 1 # 強制重繪編輯器
+                    st.session_state['editor_key_counter'] += 1
         
         with c_pdf:
             if st.button("📄 轉 PDF (下載)", type="primary", width="stretch"):
@@ -1170,7 +1072,6 @@ def main():
 
     if st.session_state['show_preview']:
         st.info("💡 勾選任一列可跳轉至該課程進行編輯。")
-        
         df_prev = load_preview_data(dept)
         st.session_state['preview_df'] = df_prev
         
@@ -1223,7 +1124,6 @@ def main():
 
             frm = st.session_state['form_data']
             courses = get_course_list()
-            # 這裡的邏輯已經更新：courses 包含了「表格現有」+「課綱標準」的聯集
             if courses: inp_course = st.selectbox("選擇課程", courses, index=courses.index(frm['course']) if is_edit and frm['course'] in courses else 0)
             else: inp_course = st.text_input("課程名稱", value=frm['course'])
             
