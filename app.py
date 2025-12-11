@@ -141,8 +141,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                # 這裡使用 use_container_width=True 是為了讓按鈕填滿欄寬 (按鈕尚未棄用此參數)
-                if st.button("👋 登出", type="secondary", use_container_width=True):
+                if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
 
@@ -231,9 +230,9 @@ def load_data(dept, semester, grade, history_year=None):
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 直接篩選：科別 + 學期 + 年級 + 學年度 (假設DB_History有科別欄位)
+                # 直接篩選科別 + 學期 + 年級 + 學年度
                 if '科別' not in df_hist.columns:
-                    st.error("歷史資料庫缺少'科別'欄位，無法載入。請檢查資料表。")
+                    st.error("歷史資料庫缺少'科別'欄位，無法載入。")
                     return pd.DataFrame()
 
                 mask_hist = (df_hist['科別'] == dept) & \
@@ -246,25 +245,21 @@ def load_data(dept, semester, grade, history_year=None):
                 target_hist = df_hist[mask_hist]
 
                 for _, h_row in target_hist.iterrows():
-                    # 🔥 保持 History 原本 UUID
                     h_uuid = str(h_row.get('uuid', '')).strip()
                     if not h_uuid: h_uuid = str(uuid.uuid4())
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
-                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
-                        # Submission 有 -> 載入 Submission 的資料
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
-                        # Submission 沒有 -> 載入 History 資料
                         row_data = h_row.to_dict()
-                        row_data['uuid'] = h_uuid # 保持原 UUID
+                        row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
                         for k, alt in {'教科書(優先1)': '教科書(1)', '審定字號(1)': '字號(1)', '審定字號(2)': '字號(2)'}.items():
                             if alt in row_data and k not in row_data: row_data[k] = row_data[alt]
@@ -337,6 +332,59 @@ def load_data(dept, semester, grade, history_year=None):
 
     except Exception as e: 
         st.error(f"讀取錯誤 (Detail): {e}")
+        return pd.DataFrame()
+
+# --- 新增功能：讀取整科的所有 Submission 資料 (供預覽用) ---
+def load_all_submission_data(dept):
+    client = get_connection()
+    if not client: return pd.DataFrame()
+    try:
+        sh = client.open(SPREADSHEET_NAME)
+        ws_sub = sh.worksheet(SHEET_SUBMISSION)
+        
+        # 讀取所有資料
+        data = ws_sub.get_all_values()
+        if not data: return pd.DataFrame()
+        headers = data[0]
+        rows = data[1:]
+        
+        # 簡單標準化欄位名稱
+        mapping = {
+            '教科書(1)': '教科書(優先1)', '教科書': '教科書(優先1)',
+            '字號(1)': '審定字號(1)', '字號': '審定字號(1)', '審定字號': '審定字號(1)',
+            '教科書(2)': '教科書(優先2)', '字號(2)': '審定字號(2)', '備註': '備註1'
+        }
+        new_headers = []
+        seen = {}
+        for col in headers:
+            c = str(col).strip()
+            final_name = mapping.get(c, c)
+            if final_name in seen:
+                seen[final_name] += 1
+                if final_name.startswith('備註'): unique_name = f"備註{seen[final_name]}"
+                else: unique_name = f"{final_name}({seen[final_name]})"
+                new_headers.append(unique_name)
+            else:
+                seen[final_name] = 1
+                if final_name == '備註': new_headers.append('備註1')
+                else: new_headers.append(final_name)
+        
+        df = pd.DataFrame(rows, columns=new_headers)
+        if df.empty: return df
+        
+        # 篩選科別
+        if '科別' in df.columns:
+            df = df[df['科別'] == dept].copy()
+        
+        # 加入勾選欄位供預覽編輯使用
+        df.insert(0, "勾選", False)
+        
+        # 排序
+        if '年級' in df.columns and '課程名稱' in df.columns:
+             df = df.sort_values(by=['年級', '學期', '課程名稱'], ascending=[True, True, True]).reset_index(drop=True)
+             
+        return df
+    except Exception:
         return pd.DataFrame()
 
 def get_course_list():
@@ -427,7 +475,7 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
-# --- 4.6 同步歷史資料到 Submission (修正：直接讀取科別) ---
+# --- 4.6 同步歷史資料到 Submission ---
 def sync_history_to_db(dept, history_year):
     client = get_connection()
     if not client: return False
@@ -454,8 +502,6 @@ def sync_history_to_db(dept, history_year):
         if df_hist.empty: return True
 
         df_hist['學年度'] = df_hist['學年度'].astype(str)
-        
-        # 🔥 直接篩選科別，不做班級推算
         if '科別' not in df_hist.columns:
             st.error("History 缺少'科別'欄位")
             return False
@@ -488,7 +534,7 @@ def sync_history_to_db(dept, history_year):
             new_row_list = []
             for header in sub_headers:
                 val = row_dict.get(header, "")
-                if not val: # mapping check
+                if not val:
                     if header == "教科書(1)": val = row_dict.get("教科書(1)")
                     elif header == "字號(1)": val = row_dict.get("字號(1)")
                 new_row_list.append(val)
@@ -718,7 +764,6 @@ def on_editor_change():
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
         
-        # Update checkboxes
         dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
         def get_cls(sys): 
             p = {"1":"一","2":"二","3":"三"}.get(str(grade),"")
@@ -774,6 +819,57 @@ def auto_load_data():
         update_class_list_from_checkboxes()
         st.session_state['editor_key_counter'] += 1
 
+# --- 新增功能：預覽資料編輯回呼 ---
+def on_preview_change():
+    key = "preview_editor"
+    if key not in st.session_state: return
+    edits = st.session_state[key]["edited_rows"]
+    target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
+    
+    if target_idx is not None:
+        # 1. 取得該列的年級與學期
+        df_preview = st.session_state['preview_df']
+        row = df_preview.iloc[target_idx]
+        target_grade = str(row['年級'])
+        target_sem = str(row['學期'])
+        target_uuid = row.get('uuid')
+        
+        # 2. 更新 Session State
+        st.session_state['grade_val'] = target_grade
+        st.session_state['sem_val'] = target_sem
+        
+        # 3. 觸發資料載入 (切換到該年級/學期)
+        auto_load_data()
+        
+        # 4. 在新載入的資料中找到該筆資料並進入編輯模式
+        current_df = st.session_state['data']
+        # 尋找對應的 row index
+        matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
+        
+        if matching_indices:
+            new_idx = matching_indices[0]
+            st.session_state['data'].at[new_idx, "勾選"] = True
+            
+            # 手動觸發 on_editor_change 的邏輯
+            # 因為我們是程式觸發，無法依賴 UI 事件，所以手動設定變數
+            st.session_state['edit_index'] = new_idx
+            row_data = current_df.iloc[new_idx]
+            st.session_state['original_key'] = {'科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))}
+            st.session_state['current_uuid'] = row_data.get('uuid')
+            st.session_state['form_data'] = {
+                'course': row_data["課程名稱"],
+                'book1': row_data.get("教科書(優先1)", ""), 'vol1': row_data.get("冊次(1)", ""), 'pub1': row_data.get("出版社(1)", ""), 'code1': row_data.get("審定字號(1)", ""),
+                'book2': row_data.get("教科書(優先2)", ""), 'vol2': row_data.get("冊次(2)", ""), 'pub2': row_data.get("出版社(2)", ""), 'code2': row_data.get("審定字號(2)", ""),
+                'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
+            }
+            cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+            st.session_state['active_classes'] = cls_list
+            st.session_state['class_multiselect'] = cls_list
+            
+            # 關閉預覽窗
+            st.session_state['show_preview'] = False
+            st.rerun()
+
 # --- 8. 主程式 ---
 def main():
     st.set_page_config(page_title="教科書填報系統", layout="wide")
@@ -787,6 +883,7 @@ def main():
     if 'form_data' not in st.session_state: st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
     if 'editor_key_counter' not in st.session_state: st.session_state['editor_key_counter'] = 0
     if 'use_history_checkbox' not in st.session_state: st.session_state['use_history_checkbox'] = False
+    if 'show_preview' not in st.session_state: st.session_state['show_preview'] = False
 
     with st.sidebar:
         st.header("1. 填報設定")
@@ -805,22 +902,59 @@ def main():
     col1, col2 = st.columns([4, 1])
     with col1: st.title("📚 教科書填報系統")
     with col2:
-        if st.button("📄 轉 PDF 報表 (下載)", type="primary", use_container_width=True):
-            if dept:
-                with st.spinner(f"正在處理 {dept} PDF..."):
-                    if st.session_state.get('use_history_checkbox'):
-                        hist_year = st.session_state.get('history_year_val')
-                        if hist_year:
-                            st.info(f"同步 {hist_year} 年資料中...")
-                            if sync_history_to_db(dept, hist_year): st.success("✅ 資料同步完成")
-                            else: st.error("❌ 同步失敗")
-                    
-                    pdf_bytes = create_pdf_report(dept)
-                    if pdf_bytes:
-                        b64 = base64.b64encode(pdf_bytes).decode('latin-1')
-                        st.markdown(f'<a href="data:application/pdf;base64,{b64}" download="{dept}_教科書總表.pdf" style="text-decoration:none; color:white; background-color:#b31412; padding:8px 12px; border-radius:5px; font-weight:bold; font-size:14px; display:block; text-align:center;">⬇️ 點此下載 PDF</a>', unsafe_allow_html=True)
-                    else: st.error("生成失敗，Submission 無資料。")
-            else: st.warning("請先選擇科別")
+        c_prev, c_pdf = st.columns(2)
+        with c_prev:
+            if st.button("👁️ 預覽 PDF 資料", width="stretch"):
+                st.session_state['show_preview'] = not st.session_state['show_preview']
+        
+        with c_pdf:
+            if st.button("📄 轉 PDF (下載)", type="primary", width="stretch"):
+                if dept:
+                    with st.spinner(f"正在處理 {dept} PDF..."):
+                        if st.session_state.get('use_history_checkbox'):
+                            hist_year = st.session_state.get('history_year_val')
+                            if hist_year:
+                                st.info(f"同步 {hist_year} 年資料中...")
+                                if sync_history_to_db(dept, hist_year): st.success("✅ 資料同步完成")
+                                else: st.error("❌ 同步失敗")
+                        
+                        pdf_bytes = create_pdf_report(dept)
+                        if pdf_bytes:
+                            b64 = base64.b64encode(pdf_bytes).decode('latin-1')
+                            st.markdown(f'<a href="data:application/pdf;base64,{b64}" download="{dept}_教科書總表.pdf" style="text-decoration:none; color:white; background-color:#b31412; padding:8px 12px; border-radius:5px; font-weight:bold; font-size:14px; display:block; text-align:center;">⬇️ 點此下載 PDF</a>', unsafe_allow_html=True)
+                        else: st.error("生成失敗，Submission 無資料。")
+                else: st.warning("請先選擇科別")
+
+    # --- 預覽區塊 ---
+    if st.session_state['show_preview']:
+        st.info("💡 勾選任一列可跳轉至該課程進行編輯。")
+        
+        # 1. 確保資料是最新的 (同步)
+        if st.session_state.get('use_history_checkbox'):
+            hist_year = st.session_state.get('history_year_val')
+            if hist_year:
+                sync_history_to_db(dept, hist_year)
+        
+        # 2. 載入整科資料
+        df_prev = load_all_submission_data(dept)
+        st.session_state['preview_df'] = df_prev # 存起來供 callback 使用
+        
+        if not df_prev.empty:
+            st.data_editor(
+                df_prev,
+                key="preview_editor",
+                on_change=on_preview_change,
+                width='stretch',
+                column_config={
+                    "勾選": st.column_config.CheckboxColumn("編輯", width="small"),
+                    "uuid": None, "填報時間": None, "學年度": None
+                },
+                disabled=["科別", "學期", "年級", "課程名稱", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "教科書(優先2)", "冊次(2)", "出版社(2)", "審定字號(2)", "適用班級", "備註1", "備註2"],
+                column_order=["勾選", "學期", "年級", "課程名稱", "教科書(優先1)", "適用班級", "備註1"]
+            )
+        else:
+            st.warning("⚠️ 目前沒有任何資料。")
+        st.divider()
 
     if 'loaded' not in st.session_state and dept and sem and grade: auto_load_data()
 
@@ -879,7 +1013,7 @@ def main():
             inp_cod2 = c2.text_input("審定字號(2)", value=frm['code2'])
             inp_nt2 = n2.text_input("備註2(作者/單價)", value=frm['note2'])
 
-            if st.button("🔄 更新 (存檔)" if is_edit else "➕ 加入 (存檔)", type="primary", use_container_width=True):
+            if st.button("🔄 更新 (存檔)" if is_edit else "➕ 加入 (存檔)", type="primary", width="stretch"):
                 if not inp_cls_str or not inp_bk1 or not inp_pub1 or not inp_vol1: st.error("⚠️ 班級、書名、冊次、出版社必填")
                 else:
                     uid = st.session_state.get('current_uuid') if is_edit else str(uuid.uuid4())
