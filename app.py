@@ -141,7 +141,6 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -255,12 +254,10 @@ def load_data(dept, semester, grade, history_year=None):
                     
                     row_data = {}
                     if not sub_match.empty:
-                        # Submission 有 -> 載入 Submission 的資料
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
-                        # Submission 沒有 -> 載入 History 資料
                         row_data = h_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
@@ -764,19 +761,21 @@ def auto_load_data():
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
     
-    # 編輯模式下不重載資料 (除非科別變更)
+    # 編輯模式下，若年級/科別變更則退出或重置
     if st.session_state.get('edit_index') is not None:
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
         elif st.session_state.get('last_grade') != grade:
-            # 切換年級 -> 恢復原班級或清空
+            # 🔥 關鍵：檢查是否切回原年級
             orig = st.session_state.get('original_key')
-            if orig and orig['年級'] == str(grade):
-                # 切回原本的年級 -> 恢復
-                st.session_state['active_classes'] = st.session_state.get('original_classes', [])
-                st.session_state['class_multiselect'] = st.session_state.get('original_classes', [])
+            
+            # 如果 original_key 存在且年級與現在選擇的相同 -> 恢復原本的班級列表
+            if orig and str(orig.get('年級')) == str(grade):
+                restored_classes = st.session_state.get('original_classes', [])
+                st.session_state['active_classes'] = restored_classes
+                st.session_state['class_multiselect'] = restored_classes
             else:
-                # 切到不同年級 -> 清空
+                # 否則清空
                 st.session_state['active_classes'] = []
                 st.session_state['class_multiselect'] = []
                 st.session_state['cb_reg'] = False
@@ -785,7 +784,7 @@ def auto_load_data():
                 st.session_state['cb_all'] = False
             
             st.session_state['last_grade'] = grade
-            update_class_list_from_checkboxes() # 更新勾選框狀態
+            update_class_list_from_checkboxes() 
             return 
         else:
             return
