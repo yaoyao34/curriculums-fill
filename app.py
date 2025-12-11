@@ -887,17 +887,14 @@ def on_editor_change():
     if key not in st.session_state: return
     edits = st.session_state[key]["edited_rows"]
     
-    # 1. 檢查是否有被「勾選 (True)」的列
     new_checked_idx = next((int(i) for i, c in edits.items() if c.get("勾選") is True), None)
     
-    # 2. 檢查是否有被「取消勾選 (False)」的列
     current_idx = st.session_state.get('edit_index')
     unchecked_current = False
     if current_idx is not None:
         if str(current_idx) in edits and edits[str(current_idx)].get("勾選") is False:
             unchecked_current = True
 
-    # 狀況 A: 使用者取消了目前的勾選 -> 退出編輯模式
     if unchecked_current:
         st.session_state['data'].at[current_idx, "勾選"] = False
         st.session_state['edit_index'] = None
@@ -909,9 +906,7 @@ def on_editor_change():
         st.session_state['class_multiselect'] = []
         return
 
-    # 狀況 B: 使用者勾選了新的一列
     if new_checked_idx is not None:
-        # 如果之前有勾選別的，先把它取消掉 (單選邏輯)
         if current_idx is not None and current_idx != new_checked_idx:
             st.session_state['data'].at[current_idx, "勾選"] = False
             
@@ -932,6 +927,8 @@ def on_editor_change():
             'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
         }
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+        
+        # ⬇️ 這裡正確地載入了班級，且不呼叫 update_class_list_from_checkboxes
         st.session_state['original_classes'] = cls_list 
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
@@ -950,7 +947,6 @@ def on_preview_change():
     target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
     
     if target_idx is not None:
-        # 1. 確保先清除舊的編輯狀態
         if st.session_state.get('edit_index') is not None:
             if 'data' in st.session_state and not st.session_state['data'].empty:
                  st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
@@ -967,7 +963,6 @@ def on_preview_change():
         st.session_state['sem_val'] = target_sem
         st.session_state['last_grade'] = target_grade 
         
-        # 2. 重新載入主畫面資料
         auto_load_data()
         
         current_df = st.session_state['data']
@@ -996,13 +991,24 @@ def on_preview_change():
                 'book2': row_data.get("教科書(優先2)", ""), 'vol2': row_data.get("冊次(2)", ""), 'pub2': row_data.get("出版社(2)", ""), 'code2': row_data.get("審定字號(2)", ""),
                 'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
             }
+            
             cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+            
+            # 🔥 關鍵修正：這裡手動設定班級與 Checkbox 狀態，絕不能呼叫 update_class_list_from_checkboxes
             st.session_state['original_classes'] = cls_list
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
+            
+            dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
+            cls_set = set(cls_list)
+            
+            # 手動反推 Checkbox 狀態
+            for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
+                tgts = get_target_classes_for_dept(dept, grade, sys)
+                st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
+            st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
+            
             st.session_state['show_preview'] = False
-            update_class_list_from_checkboxes()
-            # 🔥 強制刷新主編輯器 Key，確保勾選狀態正確顯示
             st.session_state['editor_key_counter'] += 1
 
 # --- 8. 主程式 ---
@@ -1043,7 +1049,6 @@ def main():
         with c_prev:
             if st.button("👁️ 預覽 PDF 資料", width="stretch"):
                 st.session_state['show_preview'] = not st.session_state['show_preview']
-                # 🔥 切換預覽時，強制取消當前的編輯狀態
                 if st.session_state.get('edit_index') is not None:
                     if 'data' in st.session_state and not st.session_state['data'].empty:
                          st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
