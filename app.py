@@ -212,12 +212,25 @@ def load_data(dept, semester, grade, history_year=None):
             for col in ['年級', '學期', '科別']: df_sub[col] = df_sub[col].astype(str)
         
         category_map = {}
+        # --- NEW: 提取課綱中的標準課程清單，用於下拉選單聯集 ---
+        curr_course_options = []
+
         if not df_curr.empty:
             for col in ['年級', '學期', '科別']: df_curr[col] = df_curr[col].astype(str)
             target_dept_curr = df_curr[df_curr['科別'] == dept]
+            
+            # 建立類別對照表
             for _, row in target_dept_curr.iterrows():
                 k = (row['課程名稱'], str(row['年級']), str(row['學期']))
                 category_map[k] = row['課程類別']
+            
+            # 建立當前學期年級的課綱課程清單
+            mask_opts = (df_curr['科別'] == str(dept)) & (df_curr['學期'] == str(semester)) & (df_curr['年級'] == str(grade))
+            curr_course_options = df_curr[mask_opts]['課程名稱'].unique().tolist()
+        
+        # 存入 Session State 供 get_course_list 使用
+        st.session_state['curr_course_options'] = curr_course_options
+        # --------------------------------------------------
 
         display_rows = []
         displayed_uuids = set()
@@ -430,9 +443,18 @@ def load_preview_data(dept):
     return df_final
 
 def get_course_list():
+    courses = set()
+    
+    # 1. 現有表格中的資料 (包含歷史紀錄或 Submission)
     if 'data' in st.session_state and not st.session_state['data'].empty:
-        return st.session_state['data']['課程名稱'].unique().tolist()
-    return []
+        if '課程名稱' in st.session_state['data'].columns:
+            courses.update(st.session_state['data']['課程名稱'].unique().tolist())
+
+    # 2. 課綱中的標準資料 (聯集)
+    if 'curr_course_options' in st.session_state:
+        courses.update(st.session_state['curr_course_options'])
+
+    return sorted(list(courses))
 
 # --- 4. 存檔 ---
 def save_single_row(row_data, original_key=None):
@@ -1129,6 +1151,7 @@ def main():
 
             frm = st.session_state['form_data']
             courses = get_course_list()
+            # 這裡的邏輯已經更新：courses 包含了「表格現有」+「課綱標準」的聯集
             if courses: inp_course = st.selectbox("選擇課程", courses, index=courses.index(frm['course']) if is_edit and frm['course'] in courses else 0)
             else: inp_course = st.text_input("課程名稱", value=frm['course'])
             
