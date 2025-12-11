@@ -212,12 +212,25 @@ def load_data(dept, semester, grade, history_year=None):
             for col in ['年級', '學期', '科別']: df_sub[col] = df_sub[col].astype(str)
         
         category_map = {}
+        # --- NEW: 提取課綱中的標準課程清單，用於下拉選單聯集 ---
+        curr_course_options = []
+
         if not df_curr.empty:
             for col in ['年級', '學期', '科別']: df_curr[col] = df_curr[col].astype(str)
             target_dept_curr = df_curr[df_curr['科別'] == dept]
+            
+            # 建立類別對照表
             for _, row in target_dept_curr.iterrows():
                 k = (row['課程名稱'], str(row['年級']), str(row['學期']))
                 category_map[k] = row['課程類別']
+            
+            # 建立當前學期年級的課綱課程清單
+            mask_opts = (df_curr['科別'] == str(dept)) & (df_curr['學期'] == str(semester)) & (df_curr['年級'] == str(grade))
+            curr_course_options = df_curr[mask_opts]['課程名稱'].unique().tolist()
+        
+        # 存入 Session State 供 get_course_list 使用
+        st.session_state['curr_course_options'] = curr_course_options
+        # --------------------------------------------------
 
         display_rows = []
         displayed_uuids = set()
@@ -430,9 +443,18 @@ def load_preview_data(dept):
     return df_final
 
 def get_course_list():
+    courses = set()
+    
+    # 1. 現有表格中的資料 (包含歷史紀錄或 Submission)
     if 'data' in st.session_state and not st.session_state['data'].empty:
-        return st.session_state['data']['課程名稱'].unique().tolist()
-    return []
+        if '課程名稱' in st.session_state['data'].columns:
+            courses.update(st.session_state['data']['課程名稱'].unique().tolist())
+
+    # 2. 課綱中的標準資料 (聯集)
+    if 'curr_course_options' in st.session_state:
+        courses.update(st.session_state['curr_course_options'])
+
+    return sorted(list(courses))
 
 # --- 4. 存檔 ---
 def save_single_row(row_data, original_key=None):
@@ -928,78 +950,131 @@ def on_multiselect_change():
 def on_editor_change():
     key = f"main_editor_{st.session_state['editor_key_counter']}"
     if key not in st.session_state: return
+    
     edits = st.session_state[key]["edited_rows"]
-    target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
+    
+    # 1. 檢查是否有被「勾選 (True)」的列
+    new_checked_idx = next((int(i) for i, c in edits.items() if c.get("勾選") is True), None)
+    
+    # 2. 檢查是否有被「取消勾選 (False)」的列 (針對目前正在編輯的列)
+    current_idx = st.session_state.get('edit_index')
+    unchecked_current = False
+    if current_idx is not None:
+        # 如果目前編輯的列在這次變更中變成了 False
+        if str(current_idx) in edits and edits[str(current_idx)].get("勾選") is False:
+            unchecked_current = True
+
+    # === 邏輯分支 ===
+    
+    # 狀況 A: 使用者取消了目前的勾選 -> 退出編輯模式
+    if unchecked_current:
+        st.session_state['data'].at[current_idx, "勾選"] = False
+        st.session_state['edit_index'] = None
+        st.session_state['current_uuid'] = None
+        st.session_state['original_key'] = None
+        # 清空表單
+        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
+        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
+        st.session_state['active_classes'] = []
+        st.session_state['class_multiselect'] = []
+        return
+
+    # 狀況 B: 使用者勾選了新的一列 -> 進入編輯模式
+    if new_checked_idx is not None:
+        # 如果之前有勾選別的，先把它取消掉 (單選邏輯)
+        if current_idx is not None and current_idx != new_checked_idx:
+            st.session_state['data'].at[current_idx, "勾選"] = False
             
-    if target_idx is not None:
-        st.session_state['data']["勾選"] = False
-        st.session_state['data'].at[target_idx, "勾選"] = True
-        st.session_state['edit_index'] = target_idx
-        row = st.session_state['data'].iloc[target_idx]
-        st.session_state['original_key'] = {'科別': row['科別'], '年級': str(row['年級']), '學期': str(row['學期']), '課程名稱': row['課程名稱'], '適用班級': str(row.get('適用班級', ''))}
+        st.session_state['data'].at[new_checked_idx, "勾選"] = True
+        st.session_state['edit_index'] = new_checked_idx
+        
+        row = st.session_state['data'].iloc[new_checked_idx]
+        
+        # 保存原始 Key 用於存檔比對
+        st.session_state['original_key'] = {
+            '科別': row['科別'], 
+            '年級': str(row['年級']), 
+            '學期': str(row['學期']), 
+            '課程名稱': row['課程名稱'], 
+            '適用班級': str(row.get('適用班級', ''))
+        }
         st.session_state['current_uuid'] = row.get('uuid')
+        
+        # 載入表單資料
         st.session_state['form_data'] = {
             'course': row["課程名稱"],
             'book1': row.get("教科書(優先1)", ""), 'vol1': row.get("冊次(1)", ""), 'pub1': row.get("出版社(1)", ""), 'code1': row.get("審定字號(1)", ""),
             'book2': row.get("教科書(優先2)", ""), 'vol2': row.get("冊次(2)", ""), 'pub2': row.get("出版社(2)", ""), 'code2': row.get("審定字號(2)", ""),
             'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
         }
+        
+        # 處理班級
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
-        
-        # 🔥 保存原始班級列表供恢復用
         st.session_state['original_classes'] = cls_list 
-        
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
         
-        # 🔥 進入編輯時，自動設定勾選框
+        # 自動設定 Checkbox
         dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
         cls_set = set(cls_list)
         for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
             tgts = get_target_classes_for_dept(dept, grade, sys)
             st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
         st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
-    
-    else:
-        idx = st.session_state.get('edit_index')
-        if idx is not None and str(idx) in edits and edits[str(idx)].get("勾選") is False:
-            st.session_state['data'].at[idx, "勾選"] = False
-            st.session_state['edit_index'] = None
-            st.session_state['current_uuid'] = None
 
 # --- 新增功能：預覽資料編輯回呼 ---
 def on_preview_change():
     key = "preview_editor"
     if key not in st.session_state: return
     edits = st.session_state[key]["edited_rows"]
+    
+    # 找出被勾選的那一列 (在預覽表中)
     target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
     
     if target_idx is not None:
+        # 1. 從預覽表獲取目標資料
         df_preview = st.session_state['preview_df']
         row = df_preview.iloc[target_idx]
+        
         target_grade = str(row['年級'])
         target_sem = str(row['學期'])
-        target_uuid = row.get('uuid')
+        target_uuid = str(row.get('uuid', '')).strip() # 關鍵：取得 UUID
         
+        # 2. 切換主畫面的年級與學期設定
         st.session_state['grade_val'] = target_grade
         st.session_state['sem_val'] = target_sem
         st.session_state['last_grade'] = target_grade 
         
+        # 3. 強制重新載入主表資料 (這時 st.session_state['data'] 會變成目標年級的資料)
         auto_load_data()
         
+        # 4. 在重新載入的主表中，尋找該 UUID 的位置
         current_df = st.session_state['data']
-        matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
+        matching_indices = []
         
+        if target_uuid:
+            # 優先使用 UUID 比對 (最準確)
+            matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
+        
+        # 如果 UUID 找不到 (極少見，可能是資料同步落差)，退而求其次用課程名稱比對
         if not matching_indices:
             target_course = row['課程名稱']
             matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
         
+        # 5. 鎖定編輯狀態
         if matching_indices:
-            new_idx = matching_indices[0]
+            new_idx = matching_indices[0] # 抓到主表對應的那一列
+            
+            # 設定主表該列為勾選狀態
             st.session_state['data'].at[new_idx, "勾選"] = True
             st.session_state['edit_index'] = new_idx
+            
+            # 載入編輯資料
             row_data = current_df.iloc[new_idx]
-            st.session_state['original_key'] = {'科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))}
+            st.session_state['original_key'] = {
+                '科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), 
+                '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))
+            }
             st.session_state['current_uuid'] = row_data.get('uuid')
             st.session_state['form_data'] = {
                 'course': row_data["課程名稱"],
@@ -1009,13 +1084,18 @@ def on_preview_change():
             }
             cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
             
-            # 🔥 預覽跳轉也要保存
             st.session_state['original_classes'] = cls_list
-            
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
+            
+            # 🔥 關閉預覽視窗，讓使用者專心編輯
             st.session_state['show_preview'] = False
+            
+            # 更新 Checkbox 狀態
             update_class_list_from_checkboxes()
+            
+            # 強制讓主編輯器重新渲染以顯示勾選
+            st.session_state['editor_key_counter'] += 1
 
 # --- 8. 主程式 ---
 def main():
@@ -1054,7 +1134,21 @@ def main():
         c_prev, c_pdf = st.columns(2)
         with c_prev:
             if st.button("👁️ 預覽 PDF 資料", width="stretch"):
+                # 切換顯示狀態
                 st.session_state['show_preview'] = not st.session_state['show_preview']
+                
+                # 🔥 重點：如果正在編輯中，強制取消編輯狀態
+                if st.session_state.get('edit_index') is not None:
+                    # 取消主表勾選
+                    current_idx = st.session_state['edit_index']
+                    if 'data' in st.session_state and not st.session_state['data'].empty:
+                         st.session_state['data'].at[current_idx, "勾選"] = False
+                    
+                    # 清空狀態
+                    st.session_state['edit_index'] = None
+                    st.session_state['current_uuid'] = None
+                    st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
+                    st.session_state['editor_key_counter'] += 1 # 強制重繪編輯器
         
         with c_pdf:
             if st.button("📄 轉 PDF (下載)", type="primary", width="stretch"):
@@ -1129,6 +1223,7 @@ def main():
 
             frm = st.session_state['form_data']
             courses = get_course_list()
+            # 這裡的邏輯已經更新：courses 包含了「表格現有」+「課綱標準」的聯集
             if courses: inp_course = st.selectbox("選擇課程", courses, index=courses.index(frm['course']) if is_edit and frm['course'] in courses else 0)
             else: inp_course = st.text_input("課程名稱", value=frm['course'])
             
