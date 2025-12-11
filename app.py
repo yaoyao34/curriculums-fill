@@ -141,6 +141,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
+                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -249,14 +250,17 @@ def load_data(dept, semester, grade, history_year=None):
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
+                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
+                        # Submission 有 -> 載入 Submission 的資料
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
+                        # Submission 沒有 -> 載入 History 資料
                         row_data = h_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
@@ -393,6 +397,7 @@ def load_preview_data(dept):
             if data_hist:
                 h_headers = data_hist[0]
                 h_rows = data_hist[1:]
+                
                 df_hist = pd.DataFrame(h_rows, columns=h_headers)
                 df_hist.rename(columns=mapping, inplace=True)
                 
@@ -764,14 +769,23 @@ def auto_load_data():
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
         elif st.session_state.get('last_grade') != grade:
-            # 切換年級 -> 清空班級選擇
-            st.session_state['active_classes'] = []
-            st.session_state['class_multiselect'] = []
-            st.session_state['cb_reg'] = False
-            st.session_state['cb_prac'] = False
-            st.session_state['cb_coop'] = False
-            st.session_state['cb_all'] = False
+            # 切換年級 -> 恢復原班級或清空
+            orig = st.session_state.get('original_key')
+            if orig and orig['年級'] == str(grade):
+                # 切回原本的年級 -> 恢復
+                st.session_state['active_classes'] = st.session_state.get('original_classes', [])
+                st.session_state['class_multiselect'] = st.session_state.get('original_classes', [])
+            else:
+                # 切到不同年級 -> 清空
+                st.session_state['active_classes'] = []
+                st.session_state['class_multiselect'] = []
+                st.session_state['cb_reg'] = False
+                st.session_state['cb_prac'] = False
+                st.session_state['cb_coop'] = False
+                st.session_state['cb_all'] = False
+            
             st.session_state['last_grade'] = grade
+            update_class_list_from_checkboxes() # 更新勾選框狀態
             return 
         else:
             return
@@ -793,7 +807,6 @@ def auto_load_data():
                 hist_year = available_years[0] 
 
     if dept and sem and grade:
-        # 重置班級選擇狀態
         st.session_state['active_classes'] = []
         st.session_state['class_multiselect'] = []
         
@@ -861,6 +874,10 @@ def on_editor_change():
             'note1': row.get("備註1", ""), 'note2': row.get("備註2", "")
         }
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+        
+        # 🔥 保存原始班級列表供恢復用
+        st.session_state['original_classes'] = cls_list 
+        
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
         
@@ -903,10 +920,8 @@ def on_preview_change():
         auto_load_data()
         
         current_df = st.session_state['data']
-        # 1. 嘗試用 UUID 找
         matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
         
-        # 2. 如果 UUID 找不到 (Fallback: 課程名稱)
         if not matching_indices:
             target_course = row['課程名稱']
             matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
@@ -925,6 +940,10 @@ def on_preview_change():
                 'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
             }
             cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+            
+            # 🔥 預覽跳轉也要保存
+            st.session_state['original_classes'] = cls_list
+            
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
@@ -990,7 +1009,6 @@ def main():
     if st.session_state['show_preview']:
         st.info("💡 勾選任一列可跳轉至該課程進行編輯。")
         
-        # 🔥 修正：預覽只讀取 load_preview_data，且會進行記憶體合併
         df_prev = load_preview_data(dept)
         st.session_state['preview_df'] = df_prev
         
