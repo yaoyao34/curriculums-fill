@@ -168,7 +168,7 @@ def check_login():
             else:
                 st.error("❌ 通行碼錯誤。")
     return False
-    
+
 # --- 2. 資料讀取 ---
 def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
@@ -230,7 +230,6 @@ def load_data(dept, semester, grade, history_year=None):
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
-                # 直接篩選科別 (DB_History 已有科別欄位)
                 if '科別' not in df_hist.columns:
                     st.error("歷史資料庫缺少'科別'欄位，無法載入。")
                     return pd.DataFrame()
@@ -259,7 +258,7 @@ def load_data(dept, semester, grade, history_year=None):
                         row_data['勾選'] = False
                     else:
                         row_data = h_row.to_dict()
-                        row_data['uuid'] = h_uuid
+                        row_data['uuid'] = h_uuid 
                         row_data['勾選'] = False
                         for k, alt in {'教科書(優先1)': '教科書(1)', '審定字號(1)': '字號(1)', '審定字號(2)': '字號(2)'}.items():
                             if alt in row_data and k not in row_data: row_data[k] = row_data[alt]
@@ -710,47 +709,44 @@ def create_pdf_report(dept):
     pdf.ln()
     return pdf.output()
 
-# --- 新增功能：預覽資料編輯回呼 ---
-def on_preview_change():
-    key = "preview_editor"
-    if key not in st.session_state: return
-    edits = st.session_state[key]["edited_rows"]
-    target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
+# --- 7. Callbacks ---
+def auto_load_data():
+    dept = st.session_state.get('dept_val')
+    sem = st.session_state.get('sem_val')
+    grade = st.session_state.get('grade_val')
     
-    if target_idx is not None:
-        df_preview = st.session_state['preview_df']
-        row = df_preview.iloc[target_idx]
-        target_grade = str(row['年級'])
-        target_sem = str(row['學期'])
-        target_uuid = row.get('uuid')
-        
-        st.session_state['grade_val'] = target_grade
-        st.session_state['sem_val'] = target_sem
-        auto_load_data()
-        
-        current_df = st.session_state['data']
-        matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
-        
-        if matching_indices:
-            new_idx = matching_indices[0]
-            st.session_state['data'].at[new_idx, "勾選"] = True
-            st.session_state['edit_index'] = new_idx
-            row_data = current_df.iloc[new_idx]
-            st.session_state['original_key'] = {'科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))}
-            st.session_state['current_uuid'] = row_data.get('uuid')
-            st.session_state['form_data'] = {
-                'course': row_data["課程名稱"],
-                'book1': row_data.get("教科書(優先1)", ""), 'vol1': row_data.get("冊次(1)", ""), 'pub1': row_data.get("出版社(1)", ""), 'code1': row_data.get("審定字號(1)", ""),
-                'book2': row_data.get("教科書(優先2)", ""), 'vol2': row_data.get("冊次(2)", ""), 'pub2': row_data.get("出版社(2)", ""), 'code2': row_data.get("審定字號(2)", ""),
-                'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
-            }
-            cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
-            st.session_state['active_classes'] = cls_list
-            st.session_state['class_multiselect'] = cls_list
-            st.session_state['show_preview'] = False
-            st.rerun()
+    use_hist = st.session_state.get('use_history_checkbox', False)
+    hist_year = None
 
-# --- 7. UI Callbacks ---
+    if use_hist:
+        val_in_state = st.session_state.get('history_year_val')
+        if val_in_state:
+            hist_year = val_in_state
+        else:
+            curr = st.session_state.get('current_school_year', '')
+            available_years = get_history_years(curr)
+            if available_years:
+                hist_year = available_years[0] 
+
+    if dept and sem and grade:
+        df = load_data(dept, sem, grade, hist_year)
+        st.session_state['data'] = df
+        st.session_state['loaded'] = True
+        st.session_state['edit_index'] = None
+        st.session_state['original_key'] = None
+        st.session_state['current_uuid'] = None
+        st.session_state['active_classes'] = []
+        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
+        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
+        
+        is_spec = dept in DEPT_SPECIFIC_CONFIG
+        st.session_state['cb_reg'] = True
+        st.session_state['cb_prac'] = not is_spec
+        st.session_state['cb_coop'] = not is_spec
+        st.session_state['cb_all'] = not is_spec
+        update_class_list_from_checkboxes()
+        st.session_state['editor_key_counter'] += 1
+
 def update_class_list_from_checkboxes():
     dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
     cur_set = set(st.session_state.get('class_multiselect', []))
@@ -817,42 +813,45 @@ def on_editor_change():
             st.session_state['edit_index'] = None
             st.session_state['current_uuid'] = None
 
-def auto_load_data():
-    dept = st.session_state.get('dept_val')
-    sem = st.session_state.get('sem_val')
-    grade = st.session_state.get('grade_val')
+# --- 新增功能：預覽資料編輯回呼 ---
+def on_preview_change():
+    key = "preview_editor"
+    if key not in st.session_state: return
+    edits = st.session_state[key]["edited_rows"]
+    target_idx = next((int(i) for i, c in edits.items() if c.get("勾選")), None)
     
-    use_hist = st.session_state.get('use_history_checkbox', False)
-    hist_year = None
-
-    if use_hist:
-        val_in_state = st.session_state.get('history_year_val')
-        if val_in_state:
-            hist_year = val_in_state
-        else:
-            curr = st.session_state.get('current_school_year', '')
-            available_years = get_history_years(curr)
-            if available_years:
-                hist_year = available_years[0] 
-
-    if dept and sem and grade:
-        df = load_data(dept, sem, grade, hist_year)
-        st.session_state['data'] = df
-        st.session_state['loaded'] = True
-        st.session_state['edit_index'] = None
-        st.session_state['original_key'] = None
-        st.session_state['current_uuid'] = None
-        st.session_state['active_classes'] = []
-        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
-        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
+    if target_idx is not None:
+        df_preview = st.session_state['preview_df']
+        row = df_preview.iloc[target_idx]
+        target_grade = str(row['年級'])
+        target_sem = str(row['學期'])
+        target_uuid = row.get('uuid')
         
-        is_spec = dept in DEPT_SPECIFIC_CONFIG
-        st.session_state['cb_reg'] = True
-        st.session_state['cb_prac'] = not is_spec
-        st.session_state['cb_coop'] = not is_spec
-        st.session_state['cb_all'] = not is_spec
-        update_class_list_from_checkboxes()
-        st.session_state['editor_key_counter'] += 1
+        st.session_state['grade_val'] = target_grade
+        st.session_state['sem_val'] = target_sem
+        auto_load_data()
+        
+        current_df = st.session_state['data']
+        matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
+        
+        if matching_indices:
+            new_idx = matching_indices[0]
+            st.session_state['data'].at[new_idx, "勾選"] = True
+            st.session_state['edit_index'] = new_idx
+            row_data = current_df.iloc[new_idx]
+            st.session_state['original_key'] = {'科別': row_data['科別'], '年級': str(row_data['年級']), '學期': str(row_data['學期']), '課程名稱': row_data['課程名稱'], '適用班級': str(row_data.get('適用班級', ''))}
+            st.session_state['current_uuid'] = row_data.get('uuid')
+            st.session_state['form_data'] = {
+                'course': row_data["課程名稱"],
+                'book1': row_data.get("教科書(優先1)", ""), 'vol1': row_data.get("冊次(1)", ""), 'pub1': row_data.get("出版社(1)", ""), 'code1': row_data.get("審定字號(1)", ""),
+                'book2': row_data.get("教科書(優先2)", ""), 'vol2': row_data.get("冊次(2)", ""), 'pub2': row_data.get("出版社(2)", ""), 'code2': row_data.get("審定字號(2)", ""),
+                'note1': row_data.get("備註1", ""), 'note2': row_data.get("備註2", "")
+            }
+            cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
+            st.session_state['active_classes'] = cls_list
+            st.session_state['class_multiselect'] = cls_list
+            st.session_state['show_preview'] = False
+            st.rerun()
 
 # --- 8. 主程式 ---
 def main():
@@ -926,7 +925,14 @@ def main():
                 width='stretch',
                 column_config={
                     "勾選": st.column_config.CheckboxColumn("編輯", width="small"),
-                    "uuid": None, "填報時間": None, "學年度": None
+                    "uuid": None, "填報時間": None, "學年度": None,
+                    "學期": st.column_config.TextColumn("學期", width="small"),
+                    "年級": st.column_config.TextColumn("年級", width="small"),
+                    "課程名稱": st.column_config.TextColumn("課程名稱", width="medium"),
+                    "教科書(優先1)": st.column_config.TextColumn("教科書", width="medium"),
+                    "出版社(1)": st.column_config.TextColumn("出版社", width="small"),
+                    "適用班級": st.column_config.TextColumn("適用班級", width="medium"),
+                    "備註1": st.column_config.TextColumn("備註", width="small"),
                 },
                 disabled=["科別", "學期", "年級", "課程名稱", "教科書(優先1)", "冊次(1)", "出版社(1)", "審定字號(1)", "教科書(優先2)", "冊次(2)", "出版社(2)", "審定字號(2)", "適用班級", "備註1", "備註2"],
                 column_order=["勾選", "學期", "年級", "課程名稱", "教科書(優先1)", "出版社(1)", "適用班級", "備註1"]
