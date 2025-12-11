@@ -141,6 +141,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
+                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -254,10 +255,12 @@ def load_data(dept, semester, grade, history_year=None):
                     
                     row_data = {}
                     if not sub_match.empty:
+                        # Submission 有 -> 載入 Submission 的資料
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
+                        # Submission 沒有 -> 載入 History 資料
                         row_data = h_row.to_dict()
                         row_data['uuid'] = h_uuid
                         row_data['勾選'] = False
@@ -761,7 +764,6 @@ def auto_load_data():
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
     
-    # 編輯模式下，若年級/科別變更則退出或重置
     if st.session_state.get('edit_index') is not None:
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
@@ -769,13 +771,13 @@ def auto_load_data():
             # 🔥 關鍵：檢查是否切回原年級
             orig = st.session_state.get('original_key')
             
-            # 如果 original_key 存在且年級與現在選擇的相同 -> 恢復原本的班級列表
             if orig and str(orig.get('年級')) == str(grade):
+                # 切回原本的年級 -> 恢復
                 restored_classes = st.session_state.get('original_classes', [])
                 st.session_state['active_classes'] = restored_classes
                 st.session_state['class_multiselect'] = restored_classes
             else:
-                # 否則清空
+                # 切到不同年級 -> 清空
                 st.session_state['active_classes'] = []
                 st.session_state['class_multiselect'] = []
                 st.session_state['cb_reg'] = False
@@ -784,7 +786,7 @@ def auto_load_data():
                 st.session_state['cb_all'] = False
             
             st.session_state['last_grade'] = grade
-            update_class_list_from_checkboxes() 
+            update_class_list_from_checkboxes() # 🔥 恢復後要重新計算勾選框
             return 
         else:
             return
@@ -830,25 +832,68 @@ def auto_load_data():
 
 def update_class_list_from_checkboxes():
     dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
-    cur_set = set(st.session_state.get('class_multiselect', []))
-    def get_classes(sys_name):
-        prefix = {"1": "一", "2": "二", "3": "三"}.get(str(grade), "")
-        suffixes = DEPT_SPECIFIC_CONFIG[dept].get(sys_name, []) if dept in DEPT_SPECIFIC_CONFIG else ALL_SUFFIXES.get(sys_name, [])
-        return [f"{prefix}{s}" for s in suffixes] if not (str(grade)=="3" and sys_name=="建教班") else []
-
-    for k, name in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
-        if st.session_state[k]: cur_set.update(get_classes(name))
-        else: cur_set.difference_update(get_classes(name))
     
-    final = sorted(list(cur_set))
-    st.session_state['active_classes'] = final
-    st.session_state['class_multiselect'] = final 
+    # 檢查 active_classes 裡面的班級，反推哪些學制的 Checkbox 應該被打勾
+    # 這樣切換回原年級時，上面的勾勾才會自動回來
+    current_list = st.session_state.get('active_classes', [])
+    current_set = set(current_list)
+
+    for sys_key, sys_name in [('cb_reg', '普通科'), ('cb_prac', '實用技能班'), ('cb_coop', '建教班')]:
+        targets = get_target_classes_for_dept(dept, grade, sys_name)
+        if targets and any(c in current_set for c in targets):
+            st.session_state[sys_key] = True
+        else:
+            # 只有當我們是「完全清空」狀態，或是該學制真的沒選到時才設為 False
+            # 但這裡要小心，如果是使用者手動取消的，我們不能強制勾回來
+            # 簡化邏輯：如果 active_classes 有該學制的班級 -> 勾選
+            pass # 保持現狀或設為 False? 為了復原，我們假設它是連動的
+    
+    # 這裡的邏輯比較微妙：如果是從「恢復」操作進來的，我們希望勾選框根據 active_classes 自動打勾
+    # 如果是使用者手動點勾選框，則是觸發 toggle
+    # 所以我們只檢查「包含」，如果包含就打勾，讓 UI 反應資料狀態
+    
+    if st.session_state.get('edit_index') is not None:
+         # 編輯模式下，依據 active_classes 反推勾選狀態
+         for sys_key, sys_name in [('cb_reg', '普通科'), ('cb_prac', '實用技能班'), ('cb_coop', '建教班')]:
+            targets = get_target_classes_for_dept(dept, grade, sys_name)
+            st.session_state[sys_key] = bool(targets and set(targets).intersection(current_set))
+            
+    # 一般模式的 update 邏輯 (由 checkbox 驅動 active_classes)
+    else:
+        # 這裡維持原樣，由 checkbox 決定 class
+        for sys_key, sys_name in [('cb_reg', '普通科'), ('cb_prac', '實用技能班'), ('cb_coop', '建教班')]:
+            target_classes = get_target_classes_for_dept(dept, grade, sys_name)
+            if st.session_state[sys_key]:
+                current_set.update(target_classes)
+            else:
+                current_set.difference_update(target_classes)
+        
+        final_list = sorted(list(current_set))
+        st.session_state['active_classes'] = final_list
+        st.session_state['class_multiselect'] = final_list 
+
     st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
 
 def toggle_all_checkboxes():
     v = st.session_state['cb_all']
     for k in ['cb_reg', 'cb_prac', 'cb_coop']: st.session_state[k] = v
-    update_class_list_from_checkboxes()
+    # 這裡呼叫 update，會重新計算 class list
+    # 但要注意：update 函式現在有分編輯/非編輯模式
+    # 我們需要它執行「由 checkbox 驅動 class」的邏輯
+    # 所以稍微修改 update 函式，讓它能分辨是誰呼叫的，或者我們在這裡直接寫邏輯
+    
+    dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
+    cur_set = set(st.session_state.get('class_multiselect', []))
+    
+    for k, name in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
+        # 強制更新 set
+        target_classes = get_target_classes_for_dept(dept, grade, name)
+        if v: cur_set.update(target_classes)
+        else: cur_set.difference_update(target_classes)
+        
+    final = sorted(list(cur_set))
+    st.session_state['active_classes'] = final
+    st.session_state['class_multiselect'] = final
 
 def on_multiselect_change():
     st.session_state['active_classes'] = st.session_state['class_multiselect']
@@ -874,21 +919,18 @@ def on_editor_change():
         }
         cls_list = [c.strip() for c in str(row.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
         
-        # 🔥 保存原始班級列表供恢復用
+        # 🔥 保存原始班級列表
         st.session_state['original_classes'] = cls_list 
         
         st.session_state['active_classes'] = cls_list
         st.session_state['class_multiselect'] = cls_list
         
+        # 🔥 進入編輯時，自動設定勾選框
         dept, grade = st.session_state.get('dept_val'), st.session_state.get('grade_val')
-        def get_cls(sys): 
-            p = {"1":"一","2":"二","3":"三"}.get(str(grade),"")
-            sufs = DEPT_SPECIFIC_CONFIG[dept].get(sys,[]) if dept in DEPT_SPECIFIC_CONFIG else ALL_SUFFIXES.get(sys,[])
-            return [f"{p}{s}" for s in sufs]
-        
+        cls_set = set(cls_list)
         for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
-            tgts = get_cls(sys)
-            st.session_state[k] = any(c in cls_list for c in tgts) if tgts else False
+            tgts = get_target_classes_for_dept(dept, grade, sys)
+            st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
         st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
     
     else:
@@ -940,13 +982,18 @@ def on_preview_change():
             }
             cls_list = [c.strip() for c in str(row_data.get("適用班級", "")).replace("，", ",").split(",") if c.strip()]
             
-            # 🔥 預覽跳轉也要保存
             st.session_state['original_classes'] = cls_list
-            
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
-            update_class_list_from_checkboxes()
+            
+            # 🔥 預覽跳轉時，也要自動更新勾選框
+            dept = st.session_state.get('dept_val')
+            cls_set = set(cls_list)
+            for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
+                tgts = get_target_classes_for_dept(dept, target_grade, sys)
+                st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
+            st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
 
 # --- 8. 主程式 ---
 def main():
