@@ -44,8 +44,7 @@ def safe_note(row):
             val = ""
         val = str(val).replace("備註1", "").replace("備註2", "")
         if "dtype" in val: val = val.split("Name:")[0]
-        # 強制移除換行
-        val = val.replace("\r", "").replace("\n", " ").strip()
+        val = val.replace("\n", " ").strip()
         notes.append(val)
     r1 = notes[0] if len(notes) > 0 else ""
     r2 = notes[1] if len(notes) > 1 else ""
@@ -142,7 +141,6 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
-                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -653,9 +651,10 @@ def create_pdf_report(dept):
     col_widths = [28, 73, 53, 11, 29, 38, 33, 11 ]
     col_names = ["課程名稱", "適用班級", "教科書", "冊次", "出版社", "審定字號", "備註", "核定"]
     
-    # 🔥 室設科特殊欄寬
+    # 🔥 室設科特殊欄寬：只交換寬度，不換順序
     if dept == "室設科":
-        col_widths[1], col_widths[2] = col_widths[2], col_widths[1] # 交換 班級(73) 與 教科書(53)
+        col_widths[1] = 19
+        col_widths[2] = 107
 
     LINE_HEIGHT = 5.5 
     
@@ -689,43 +688,61 @@ def create_pdf_report(dept):
                 c2 = str(row.get('審定字號(2)') or row.get('字號(2)', '')).strip()
                 has_priority_2 = (b2 != "" or v2 != "")
                 
-                def fmt(val1, val2):
-                    if not val1 and not val2: return ""
-                    elif not val2: return val1
-                    elif not val1: return val2
-                    else: return f"{val1}\n{val2}"
+                # 🔥 強制移除換行
+                def clean(s): return s.replace('\r', '').replace('\n', ' ')
                 
-                # 準備資料 (順序維持不變，僅欄寬改變)
-                col_course = str(row['課程名稱'])
-                # 🔥 這裡強制移除換行符號
-                col_book = fmt(b1, b2).replace('\r', '').replace('\n', ' ')
-                col_class = str(row['適用班級'])
-                col_vol = fmt(v1, v2)
-                col_pub = fmt(p1, p2).replace('\r', '').replace('\n', ' ')
-                col_code = fmt(c1, c2)
-                col_note = fmt(r1, r2)
-                col_check = "" 
-
-                data_row = [col_course, col_class, col_book, col_vol, col_pub, col_code, col_note, col_check]
+                # 準備資料 P1
+                p1_data = [
+                    str(row['課程名稱']), str(row['適用班級']),
+                    clean(b1), clean(v1), clean(p1), clean(c1), clean(r1), ""
+                ]
+                
+                # 準備資料 P2
+                p2_data = [
+                    "", "", # 課程班級共用
+                    clean(b2), clean(v2), clean(p2), clean(c2), clean(r2), ""
+                ]
 
                 pdf.set_font(CHINESE_FONT, '', 12) 
-                cell_line_counts = [] 
-                for i, text in enumerate(data_row):
-                    w = col_widths[i] 
-                    segments = str(text).split('\n')
-                    total_lines = 0
-                    for seg in segments:
-                        safe_w = w - 2 if w > 2 else 1
-                        txt_w = pdf.get_string_width(seg)
-                        lines = math.ceil(txt_w / safe_w) if txt_w > 0 else 1
-                        if not seg and len(segments)==1 and text=="": lines=0
-                        total_lines += lines
-                    cell_line_counts.append(max(1, total_lines))
                 
-                max_lines = max(cell_line_counts)
-                if has_priority_2 and max_lines < 2: max_lines = 2
-                row_h = max(max_lines * LINE_HEIGHT + 4, 10.0) 
+                # 計算高度
+                lines_p1 = []
+                for i, text in enumerate(p1_data):
+                    w = col_widths[i]
+                    txt_w = pdf.get_string_width(text)
+                    lines = math.ceil(txt_w / (w-2)) if txt_w > 0 else 1
+                    if text == "": lines = 0
+                    if i in [0, 1]: lines = 0 # 課程/班級稍後算
+                    lines_p1.append(lines)
                 
+                lines_p2 = []
+                for i, text in enumerate(p2_data):
+                    w = col_widths[i]
+                    txt_w = pdf.get_string_width(text)
+                    lines = math.ceil(txt_w / (w-2)) if txt_w > 0 else 1
+                    if text == "": lines = 0
+                    lines_p2.append(lines)
+                
+                # 計算課程與班級的高度
+                lines_common = []
+                for i in [0, 1]:
+                    w = col_widths[i]
+                    text = p1_data[i]
+                    txt_w = pdf.get_string_width(text)
+                    lines = math.ceil(txt_w / (w-2)) if txt_w > 0 else 1
+                    lines_common.append(lines)
+
+                max_h_p1 = max(lines_p1) * LINE_HEIGHT + 2 # padding
+                max_h_p2 = max(lines_p2) * LINE_HEIGHT + 2 if has_priority_2 else 0
+                max_h_common = max(lines_common) * LINE_HEIGHT + 4
+                
+                # 確保每一行至少有點高度 (CheckBox 空間)
+                if max_h_p1 < 6: max_h_p1 = 6
+                if has_priority_2 and max_h_p2 < 6: max_h_p2 = 6
+                
+                row_h = max(max_h_common, max_h_p1 + max_h_p2)
+                
+                # 分頁判斷
                 if pdf.get_y() + row_h > pdf.page_break_trigger:
                     pdf.add_page()
                     pdf.set_font(CHINESE_FONT, 'B', 14)
@@ -734,30 +751,53 @@ def create_pdf_report(dept):
                     render_table_header(pdf)
                     
                 start_x, start_y = pdf.get_x(), pdf.get_y()
-                for i, text in enumerate(data_row):
-                    w = col_widths[i] 
+                
+                # 繪製
+                for i in range(8):
+                    w = col_widths[i]
                     pdf.set_xy(start_x, start_y)
-                    pdf.cell(w, row_h, "", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP) 
-                    y_pos = start_y + (row_h - cell_line_counts[i] * LINE_HEIGHT) / 2
-                    pdf.set_xy(start_x, y_pos)
-                    pdf.set_font(CHINESE_FONT, '', 12)
-                    pdf.multi_cell(w, LINE_HEIGHT, str(text), border=0, align=('C' if i==3 else 'L'))
-                    start_x += w 
-                
-                w_chk = col_widths[7]
-                pdf.set_xy(start_x, start_y)
-                pdf.cell(w_chk, row_h, "", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP) 
-                box_sz, box_x = 4, start_x + (w_chk - 4)/2 - 2
-                
-                pdf.rect(box_x, start_y + row_h*0.25 - 2, box_sz, box_sz)
-                pdf.set_xy(box_x + box_sz + 1, start_y + row_h*0.25 - 2)
-                pdf.set_font(CHINESE_FONT, '', 8)
-                pdf.cell(5, box_sz, "1", border=0, new_x=XPos.RIGHT, new_y=YPos.TOP)
-                
-                if has_priority_2:
-                    pdf.rect(box_x, start_y + row_h*0.75 - 2, box_sz, box_sz)
-                    pdf.set_xy(box_x + box_sz + 1, start_y + row_h*0.75 - 2)
-                    pdf.cell(5, box_sz, "2", border=0, new_x=XPos.RIGHT, new_y=YPos.TOP)
+                    pdf.cell(w, row_h, "", border=1) # 外框
+                    
+                    if i in [0, 1]: # 課程 & 班級 (垂直置中)
+                        y_pos = start_y + (row_h - lines_common[i]*LINE_HEIGHT)/2
+                        pdf.set_xy(start_x, y_pos)
+                        pdf.multi_cell(w, LINE_HEIGHT, p1_data[i], border=0, align='C' if i==1 else 'L') # 班級置中
+                    
+                    elif i == 7: # 核定欄
+                        # 畫 Checkbox
+                        w_chk = w
+                        box_sz = 4
+                        box_x = start_x + (w_chk - box_sz)/2 - 2
+                        
+                        # P1 Checkbox
+                        y_box1 = start_y + (max_h_p1 - box_sz)/2
+                        pdf.rect(box_x, y_box1, box_sz, box_sz)
+                        pdf.set_xy(box_x + box_sz + 1, y_box1)
+                        pdf.set_font(CHINESE_FONT, '', 8)
+                        pdf.cell(5, box_sz, "1", border=0)
+                        
+                        if has_priority_2:
+                            y_box2 = start_y + max_h_p1 + (max_h_p2 - box_sz)/2
+                            pdf.rect(box_x, y_box2, box_sz, box_sz)
+                            pdf.set_xy(box_x + box_sz + 1, y_box2)
+                            pdf.cell(5, box_sz, "2", border=0)
+                        
+                        pdf.set_font(CHINESE_FONT, '', 12)
+
+                    else: # 書籍資訊 (分兩層)
+                        # P1 Layer
+                        y_pos1 = start_y + (max_h_p1 - lines_p1[i]*LINE_HEIGHT)/2
+                        pdf.set_xy(start_x, y_pos1)
+                        pdf.multi_cell(w, LINE_HEIGHT, p1_data[i], border=0, align='C' if i==3 else 'L')
+                        
+                        if has_priority_2:
+                            # P2 Layer
+                            y_pos2 = start_y + max_h_p1 + (max_h_p2 - lines_p2[i]*LINE_HEIGHT)/2
+                            pdf.set_xy(start_x, y_pos2)
+                            pdf.multi_cell(w, LINE_HEIGHT, p2_data[i], border=0, align='C' if i==3 else 'L')
+
+                    start_x += w
+
                 pdf.set_y(start_y + row_h)
             pdf.ln(5) 
     
@@ -934,8 +974,10 @@ def on_preview_change():
         auto_load_data()
         
         current_df = st.session_state['data']
+        # 1. 嘗試用 UUID 找
         matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
         
+        # 2. 如果 UUID 找不到 (Fallback: 課程名稱)
         if not matching_indices:
             target_course = row['課程名稱']
             matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
