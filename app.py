@@ -44,7 +44,8 @@ def safe_note(row):
             val = ""
         val = str(val).replace("備註1", "").replace("備註2", "")
         if "dtype" in val: val = val.split("Name:")[0]
-        val = val.replace("\n", " ").strip()
+        # 強制移除換行
+        val = val.replace("\r", "").replace("\n", " ").strip()
         notes.append(val)
     r1 = notes[0] if len(notes) > 0 else ""
     r2 = notes[1] if len(notes) > 1 else ""
@@ -141,6 +142,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
+                # width='stretch'
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -651,9 +653,9 @@ def create_pdf_report(dept):
     col_widths = [28, 73, 53, 11, 29, 38, 33, 11 ]
     col_names = ["課程名稱", "適用班級", "教科書", "冊次", "出版社", "審定字號", "備註", "核定"]
     
-    # 🔥 室設科欄寬修正：只交換寬度數值
+    # 🔥 室設科特殊欄寬
     if dept == "室設科":
-        col_widths[1], col_widths[2] = col_widths[2], col_widths[1]
+        col_widths[1], col_widths[2] = col_widths[2], col_widths[1] # 交換 班級(73) 與 教科書(53)
 
     LINE_HEIGHT = 5.5 
     
@@ -693,18 +695,18 @@ def create_pdf_report(dept):
                     elif not val1: return val2
                     else: return f"{val1}\n{val2}"
                 
-                # 欄位順序保持不變
-                data_row = [
-                    str(row['課程名稱']), str(row['適用班級']),
-                    fmt(b1, b2), fmt(v1, v2), fmt(p1, p2), fmt(c1, c2), fmt(r1, r2)
-                ]
-                
-                # 🔥 室設科：資料列的內容順序也要對應欄寬的交換
-                if dept == "室設科":
-                     # 原順序: [課程, 班級, 書名, ...]
-                     # 寬度已換: [課程, (書寬), (班寬), ...]
-                     # 所以資料也要換: [課程, 書名, 班級, ...]
-                     data_row[1], data_row[2] = data_row[2], data_row[1]
+                # 準備資料 (順序維持不變，僅欄寬改變)
+                col_course = str(row['課程名稱'])
+                # 🔥 這裡強制移除換行符號
+                col_book = fmt(b1, b2).replace('\r', '').replace('\n', ' ')
+                col_class = str(row['適用班級'])
+                col_vol = fmt(v1, v2)
+                col_pub = fmt(p1, p2).replace('\r', '').replace('\n', ' ')
+                col_code = fmt(c1, c2)
+                col_note = fmt(r1, r2)
+                col_check = "" 
+
+                data_row = [col_course, col_class, col_book, col_vol, col_pub, col_code, col_note, col_check]
 
                 pdf.set_font(CHINESE_FONT, '', 12) 
                 cell_line_counts = [] 
@@ -777,7 +779,7 @@ def auto_load_data():
     sem = st.session_state.get('sem_val')
     grade = st.session_state.get('grade_val')
     
-    # 編輯模式下，若年級/科別變更則退出或重置
+    # 編輯模式下不重載資料 (除非科別變更)
     if st.session_state.get('edit_index') is not None:
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
@@ -959,14 +961,7 @@ def on_preview_change():
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
-            
-            # 🔥 預覽跳轉時，也要自動更新勾選框
-            dept = st.session_state.get('dept_val')
-            cls_set = set(cls_list)
-            for k, sys in [('cb_reg','普通科'), ('cb_prac','實用技能班'), ('cb_coop','建教班')]:
-                tgts = get_target_classes_for_dept(dept, target_grade, sys)
-                st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
-            st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
+            update_class_list_from_checkboxes()
 
 # --- 8. 主程式 ---
 def main():
