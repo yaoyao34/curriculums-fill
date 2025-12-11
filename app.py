@@ -781,10 +781,21 @@ def auto_load_data():
     if st.session_state.get('edit_index') is not None:
         if st.session_state.get('last_dept') != dept:
             st.session_state['edit_index'] = None
+        elif st.session_state.get('last_grade') != grade:
+            # 切換年級 -> 清空班級選擇，更新 last_grade，但不重新載入資料
+            st.session_state['active_classes'] = []
+            st.session_state['class_multiselect'] = []
+            st.session_state['cb_reg'] = False
+            st.session_state['cb_prac'] = False
+            st.session_state['cb_coop'] = False
+            st.session_state['cb_all'] = False
+            st.session_state['last_grade'] = grade
+            return 
         else:
             return
 
     st.session_state['last_dept'] = dept
+    st.session_state['last_grade'] = grade
 
     use_hist = st.session_state.get('use_history_checkbox', False)
     hist_year = None
@@ -800,7 +811,6 @@ def auto_load_data():
                 hist_year = available_years[0] 
 
     if dept and sem and grade:
-        # 重置班級選擇狀態 (修正累加問題)
         st.session_state['active_classes'] = []
         st.session_state['class_multiselect'] = []
         
@@ -809,8 +819,9 @@ def auto_load_data():
         st.session_state['cb_prac'] = not is_spec
         st.session_state['cb_coop'] = not is_spec
         st.session_state['cb_all'] = not is_spec
+
         update_class_list_from_checkboxes()
-        
+
         df = load_data(dept, sem, grade, hist_year)
         st.session_state['data'] = df
         st.session_state['loaded'] = True
@@ -905,8 +916,9 @@ def on_preview_change():
         # 1. 強制更新側邊欄狀態
         st.session_state['grade_val'] = target_grade
         st.session_state['sem_val'] = target_sem
+        st.session_state['last_grade'] = target_grade # 同步更新避免觸發 auto_load_data 的重置
         
-        # 2. 強制載入資料 (因為 auto_load_data 有 edit_index 檢查，這裡要手動呼叫 load_data 更新 st.session_state['data'])
+        # 2. 強制載入資料 
         dept = st.session_state.get('dept_val')
         use_hist = st.session_state.get('use_history_checkbox', False)
         hist_year = st.session_state.get('history_year_val') if use_hist else None
@@ -916,10 +928,9 @@ def on_preview_change():
         
         # 3. 進入編輯模式
         current_df = st.session_state['data']
-        # 嘗試用 UUID 找
         matching_indices = current_df.index[current_df['uuid'] == target_uuid].tolist()
         
-        # 如果 UUID 找不到 (可能因為是未存檔的預設課程，載入後產生了新 UUID)
+        # fallback: 用課程名稱找 (針對未存檔的歷史資料或預設課程)
         if not matching_indices:
             target_course = row['課程名稱']
             matching_indices = current_df.index[current_df['課程名稱'] == target_course].tolist()
@@ -941,7 +952,7 @@ def on_preview_change():
             st.session_state['active_classes'] = cls_list
             st.session_state['class_multiselect'] = cls_list
             st.session_state['show_preview'] = False
-            # 觸發更新班級勾選框
+            
             update_class_list_from_checkboxes()
 
 # --- 8. 主程式 ---
@@ -959,6 +970,7 @@ def main():
     if 'use_history_checkbox' not in st.session_state: st.session_state['use_history_checkbox'] = False
     if 'show_preview' not in st.session_state: st.session_state['show_preview'] = False
     if 'last_dept' not in st.session_state: st.session_state['last_dept'] = None
+    if 'last_grade' not in st.session_state: st.session_state['last_grade'] = None
 
     with st.sidebar:
         st.header("1. 填報設定")
