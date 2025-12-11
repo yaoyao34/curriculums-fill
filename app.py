@@ -887,37 +887,28 @@ def on_editor_change():
     if key not in st.session_state: return
     edits = st.session_state[key]["edited_rows"]
     
-    new_checked_idx = next((int(i) for i, c in edits.items() if c.get("勾選") is True), None)
+    # 策略：直接掃描所有編輯紀錄，只要有 False 就重置，只要有 True 就設定
     
-    current_idx = st.session_state.get('edit_index')
-    unchecked_current = False
-    if current_idx is not None:
-        if str(current_idx) in edits and edits[str(current_idx)].get("勾選") is False:
-            unchecked_current = True
-
-    # 狀況 A: 使用者取消了目前的勾選 -> 退出編輯模式
-    if unchecked_current:
-        st.session_state['data'].at[current_idx, "勾選"] = False
-        st.session_state['edit_index'] = None
-        st.session_state['current_uuid'] = None
-        st.session_state['original_key'] = None
-        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
-        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
-        st.session_state['active_classes'] = []
-        st.session_state['class_multiselect'] = []
-        # 🔥 強制刷新介面，防止狀態殘留
-        st.session_state['editor_key_counter'] += 1
-        return
-
-    # 狀況 B: 使用者勾選了新的一列
-    if new_checked_idx is not None:
-        if current_idx is not None and current_idx != new_checked_idx:
+    found_true_idx = None
+    found_false_idx = None
+    
+    for idx_str, changes in edits.items():
+        if changes.get("勾選") is True:
+            found_true_idx = int(idx_str)
+        elif changes.get("勾選") is False:
+            found_false_idx = int(idx_str)
+            
+    # 狀況 A: 新增勾選 (優先處理)
+    if found_true_idx is not None:
+        # 如果之前有勾選別的，先把它取消掉 (單選邏輯)
+        current_idx = st.session_state.get('edit_index')
+        if current_idx is not None and current_idx != found_true_idx:
             st.session_state['data'].at[current_idx, "勾選"] = False
             
-        st.session_state['data'].at[new_checked_idx, "勾選"] = True
-        st.session_state['edit_index'] = new_checked_idx
+        st.session_state['data'].at[found_true_idx, "勾選"] = True
+        st.session_state['edit_index'] = found_true_idx
         
-        row = st.session_state['data'].iloc[new_checked_idx]
+        row = st.session_state['data'].iloc[found_true_idx]
         st.session_state['original_key'] = {
             '科別': row['科別'], '年級': str(row['年級']), '學期': str(row['學期']), 
             '課程名稱': row['課程名稱'], '適用班級': str(row.get('適用班級', ''))
@@ -941,6 +932,24 @@ def on_editor_change():
             tgts = get_target_classes_for_dept(dept, grade, sys)
             st.session_state[k] = bool(tgts and set(tgts).intersection(cls_set))
         st.session_state['cb_all'] = all([st.session_state['cb_reg'], st.session_state['cb_prac'], st.session_state['cb_coop']])
+        
+        # 強制刷新，確保單選效果
+        st.session_state['editor_key_counter'] += 1
+        return
+
+    # 狀況 B: 取消勾選 (如果沒有任何 True，但有 False)
+    if found_false_idx is not None:
+        st.session_state['data'].at[found_false_idx, "勾選"] = False
+        st.session_state['edit_index'] = None
+        st.session_state['current_uuid'] = None
+        st.session_state['original_key'] = None
+        st.session_state['form_data'] = {k: '' for k in ['course','book1','pub1','code1','book2','pub2','code2','note1','note2']}
+        st.session_state['form_data'].update({'vol1':'全', 'vol2':'全'})
+        st.session_state['active_classes'] = []
+        st.session_state['class_multiselect'] = []
+        # 🔥 關鍵：強制刷新介面，防止狀態殘留
+        st.session_state['editor_key_counter'] += 1
+        return
 
 def on_preview_change():
     key = "preview_editor"
@@ -1051,7 +1060,6 @@ def main():
         with c_prev:
             if st.button("👁️ 預覽 PDF 資料", width="stretch"):
                 st.session_state['show_preview'] = not st.session_state['show_preview']
-                # 🔥 切換預覽時，強制取消當前的編輯狀態
                 if st.session_state.get('edit_index') is not None:
                     if 'data' in st.session_state and not st.session_state['data'].empty:
                          st.session_state['data'].at[st.session_state['edit_index'], "勾選"] = False
