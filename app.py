@@ -141,6 +141,7 @@ def check_login():
             with col_info:
                 st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
             with col_btn:
+                # width='stretch' 取代 use_container_width
                 if st.button("👋 登出", type="secondary", width="stretch"):
                     logout()
         return True
@@ -168,7 +169,7 @@ def check_login():
             else:
                 st.error("❌ 通行碼錯誤。")
     return False
-
+    
 # --- 2. 資料讀取 ---
 def load_data(dept, semester, grade, history_year=None):
     client = get_connection()
@@ -230,6 +231,7 @@ def load_data(dept, semester, grade, history_year=None):
                     if col in df_hist.columns: df_hist[col] = df_hist[col].astype(str)
                 if '學年度' in df_hist.columns: df_hist['學年度'] = df_hist['學年度'].astype(str)
                 
+                # 直接篩選科別 (DB_History 已有科別欄位)
                 if '科別' not in df_hist.columns:
                     st.error("歷史資料庫缺少'科別'欄位，無法載入。")
                     return pd.DataFrame()
@@ -244,21 +246,25 @@ def load_data(dept, semester, grade, history_year=None):
                 target_hist = df_hist[mask_hist]
 
                 for _, h_row in target_hist.iterrows():
+                    # 🔥 關鍵修正：保持 History 的 UUID
                     h_uuid = str(h_row.get('uuid', '')).strip()
                     if not h_uuid: h_uuid = str(uuid.uuid4())
 
                     sub_match = pd.DataFrame()
                     if not df_sub.empty:
+                        # 依據 UUID 比對
                         sub_match = df_sub[df_sub['uuid'] == h_uuid]
                     
                     row_data = {}
                     if not sub_match.empty:
+                        # Submission 有 -> 載入 Submission 的資料 (使用者修改過的)
                         s_row = sub_match.iloc[0]
                         row_data = s_row.to_dict()
                         row_data['勾選'] = False
                     else:
+                        # Submission 沒有 -> 載入 History 資料 (預設)
                         row_data = h_row.to_dict()
-                        row_data['uuid'] = h_uuid 
+                        row_data['uuid'] = h_uuid # 保持原 UUID
                         row_data['勾選'] = False
                         for k, alt in {'教科書(優先1)': '教科書(1)', '審定字號(1)': '字號(1)', '審定字號(2)': '字號(2)'}.items():
                             if alt in row_data and k not in row_data: row_data[k] = row_data[alt]
@@ -813,7 +819,6 @@ def on_editor_change():
             st.session_state['edit_index'] = None
             st.session_state['current_uuid'] = None
 
-# --- 新增功能：預覽資料編輯回呼 ---
 def on_preview_change():
     key = "preview_editor"
     if key not in st.session_state: return
