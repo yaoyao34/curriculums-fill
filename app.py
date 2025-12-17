@@ -1151,7 +1151,8 @@ def main():
             c3.checkbox("建教", key="cb_coop", on_change=update_class_list_from_checkboxes)
             
             poss = get_all_possible_classes(grade)
-            sel_cls = st.multiselect("最終班級列表:", options=sorted(list(set(poss + st.session_state['active_classes']))), default=st.session_state['active_classes'], key="class_multiselect", on_change=on_multiselect_change)
+            #sel_cls = st.multiselect("最終班級列表:", options=sorted(list(set(poss + st.session_state['active_classes']))), default=st.session_state['active_classes'], key="class_multiselect", on_change=on_multiselect_change)
+            sel_cls = st.multiselect("最終班級列表:", options=sorted(list(set(poss + st.session_state['active_classes']))), key="class_multiselect", on_change=on_multiselect_change)
             inp_cls_str = ",".join(sel_cls)
 
             st.markdown("**第一優先**")
