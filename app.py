@@ -170,18 +170,10 @@ def check_login():
     if st.session_state.get("logged_in"):
         with st.sidebar:
             st.divider()
-            # 顯示學年度
-            st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
-            
-            # 將清除快取與登出按鈕並列
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("🧹 清除快取", use_container_width=True):
-                    st.cache_data.clear()
-                    st.success("已清除")
-                    time.sleep(1)
-                    st.rerun()
-            with c2:
+            col_info, col_btn = st.columns([2, 1])
+            with col_info:
+                st.markdown(f"##### 📅 學年度：{st.session_state.get('current_school_year', '')}")
+            with col_btn:
                 if st.button("👋 登出", type="secondary", use_container_width=True):
                     logout()
         return True
@@ -373,6 +365,7 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
             cat = row['課程類別']
             cls_str = row.get('預設適用班級') or row.get('適用班級', '')
             cls_set = parse_classes(cls_str)
+            
             if k not in complex_map: complex_map[k] = []
             complex_map[k].append({'cat': cat, 'classes': cls_set})
             
@@ -531,6 +524,7 @@ def delete_row_from_db(target_uuid):
         return True
     return False
 
+# 🔥 補回 sync_history_to_db，供 PDF 產生前調用
 def sync_history_to_db(dept, history_year):
     client = get_connection()
     if not client: return False
@@ -581,6 +575,7 @@ def sync_history_to_db(dept, history_year):
         rows_to_append = []
         for _, row in target_rows.iterrows():
             h_uuid = str(row.get('uuid', '')).strip()
+            # 只有當 UUID 不在 Submission 時才寫入
             if h_uuid in existing_uuids: continue 
 
             def get_val(keys):
@@ -1018,7 +1013,17 @@ def main():
     if 'last_grade' not in st.session_state: st.session_state['last_grade'] = None
 
     with st.sidebar:
-        st.header("1. 填報設定")
+        # Header Area with Clear Cache Button
+        hc1, hc2 = st.columns([3, 2])
+        with hc1:
+            st.header("1. 填報設定")
+        with hc2:
+            if st.button("🧹 清除快取", use_container_width=True):
+                st.cache_data.clear()
+                st.success("已清除")
+                time.sleep(1)
+                st.rerun()
+
         depts = ["建築科", "機械科", "電機科", "製圖科", "室設科", "國文科", "英文科", "數學科", "自然科", "社會科", "資訊科技", "體育科", "國防科", "藝術科", "健護科", "輔導科", "閩南語"]
         dept = st.selectbox("科別", depts, key='dept_val', on_change=auto_load_data)
         c1, c2 = st.columns(2)
@@ -1033,13 +1038,6 @@ def main():
             else: 
                 st.warning("⚠️ 無可用的歷史學年度")
         
-        st.divider()
-        if st.button("🧹 強制清除快取"):
-            st.cache_data.clear()
-            st.success("快取已清除！")
-            time.sleep(1)
-            st.rerun()
-
     col1, col2 = st.columns([4, 1])
     with col1: st.title("📚 教科書填報系統")
     with col2:
@@ -1139,7 +1137,7 @@ def main():
             
             poss = get_all_possible_classes(grade)
             
-            # --- FIX: Removed 'default' parameter to fix session state warning ---
+            # --- Fix: Remove 'default' parameter ---
             if "class_multiselect" not in st.session_state:
                 st.session_state["class_multiselect"] = st.session_state.get('active_classes', [])
 
@@ -1149,7 +1147,7 @@ def main():
                 key="class_multiselect", 
                 on_change=on_multiselect_change
             )
-            # -------------------------------------------------------------------
+            # -------------------------------------
 
             inp_cls_str = ",".join(sel_cls)
 
