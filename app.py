@@ -272,7 +272,7 @@ def normalize_df(headers, rows):
     cols_to_keep = [c for c in df.columns if not c.startswith('uuid_')]
     df = df[cols_to_keep]
     
-    # 確保關鍵欄位為字串且去空白
+    # 🔥 強制清洗關鍵欄位：去空白、轉字串 (解決重複顯示與漏抓問題)
     for col in ['年級', '學期', '科別', 'uuid', '學年度', '課程名稱', '適用班級']:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
@@ -281,6 +281,13 @@ def normalize_df(headers, rows):
 
 # --- 3. 統一資料合併邏輯 (The Engine) ---
 def get_merged_data(dept, target_semester=None, target_grade=None, use_history=False, pad_curriculum=False):
+    """
+    核心合併引擎：
+    1. Submission: 永遠載入。
+    2. History: 若 use_history=True 則載入。重複時以 Submission 為準。
+    3. Curriculum: 若 pad_curriculum=True 且課程完全未出現 (Submission中沒有)，則補空白行。
+    """
+    
     sub_vals, hist_vals, curr_vals, _ = fetch_raw_dataframes()
     if not sub_vals: return pd.DataFrame()
 
@@ -288,18 +295,21 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
     df_hist = normalize_df(hist_vals[0], hist_vals[1:]) if hist_vals else pd.DataFrame()
     df_curr = normalize_df(curr_vals[0], curr_vals[1:]) if curr_vals else pd.DataFrame()
 
-    # --- 1. 處理 Submission ---
+    # --- 1. 處理 Submission (基礎資料) ---
     mask_sub = (df_sub['科別'] == dept)
-    if target_semester: mask_sub &= (df_sub['學期'] == str(target_semester))
-    if target_grade: mask_sub &= (df_sub['年級'] == str(target_grade))
+    if target_semester: mask_sub &= (df_sub['學期'] == str(target_semester).strip())
+    if target_grade: mask_sub &= (df_sub['年級'] == str(target_grade).strip())
     final_df = df_sub[mask_sub].copy()
     
     if '勾選' not in final_df.columns: final_df['勾選'] = False
     
     existing_uuids = set(final_df['uuid'].tolist())
+    
+    # 建立目前已有的課程名稱清單 (用於判斷是否需要從課綱補資料)
+    # 注意：這裡只記錄「課程名稱」，若 Submission 有這門課，課綱就不補
     existing_courses = set(final_df['課程名稱'].tolist())
 
-    # --- 2. 處理 History ---
+    # --- 2. 處理 History (若勾選) ---
     if use_history:
         hist_year = st.session_state.get('history_year_val')
         if not hist_year:
@@ -314,8 +324,8 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
                 if target_year_str == "未填寫": target_year_str = ""
                 
                 mask_hist = (df_hist['科別'] == dept) & (df_hist['學年度'] == target_year_str)
-                if target_semester: mask_hist &= (df_hist['學期'] == str(target_semester))
-                if target_grade: mask_hist &= (df_hist['年級'] == str(target_grade))
+                if target_semester: mask_hist &= (df_hist['學期'] == str(target_semester).strip())
+                if target_grade: mask_hist &= (df_hist['年級'] == str(target_grade).strip())
                 
                 target_hist = df_hist[mask_hist].copy()
                 temp_hist_uuids = set()
@@ -324,8 +334,13 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
                     h_uuid = row.get('uuid', '')
                     if not h_uuid: h_uuid = str(uuid.uuid4())
                     
-                    if h_uuid in existing_uuids: continue
-                    if h_uuid in temp_hist_uuids: h_uuid = str(uuid.uuid4())
+                    # 規則 A：Submission 有的 UUID，以 Submission 為準 (跳過)
+                    if h_uuid in existing_uuids:
+                        continue
+                    
+                    # 規則 B：History 內部有兩筆相同 UUID (例如複製貼上)，兩筆都要留 (給新 ID)
+                    if h_uuid in temp_hist_uuids:
+                        h_uuid = str(uuid.uuid4())
                     
                     row_data = row.to_dict()
                     row_data['uuid'] = h_uuid
@@ -338,26 +353,33 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
                     temp_hist_uuids.add(h_uuid)
                     existing_courses.add(row.get('課程名稱', ''))
 
-    # --- 3. 處理 Curriculum ---
+    # --- 3. 處理 Curriculum (補空行) ---
+    # 邏輯：只有當 pad_curriculum=True (通常是沒勾選歷史時)，且該課程尚未出現在現有清單中，才補入
     if pad_curriculum and not df_curr.empty:
         mask_curr = (df_curr['科別'] == dept)
-        if target_grade: mask_curr &= (df_curr['年級'] == str(target_grade))
-        if target_semester: mask_curr &= (df_curr['學期'] == str(target_semester))
+        if target_grade: mask_curr &= (df_curr['年級'] == str(target_grade).strip())
+        if target_semester: mask_curr &= (df_curr['學期'] == str(target_semester).strip())
         target_curr = df_curr[mask_curr]
 
         for _, c_row in target_curr.iterrows():
             c_name = c_row['課程名稱']
-            if c_name not in existing_courses:
-                new_row = {
-                    "勾選": False, "uuid": str(uuid.uuid4()), "科別": dept,
-                    "年級": c_row['年級'], "學期": c_row['學期'],
-                    "課程類別": c_row['課程類別'], "課程名稱": c_name,
-                    "適用班級": c_row.get('預設適用班級') or c_row.get('適用班級', ''),
-                    "教科書(優先1)": "", "冊次(1)": "", "出版社(1)": "", "審定字號(1)": "",
-                    "教科書(優先2)": "", "冊次(2)": "", "出版社(2)": "", "審定字號(2)": "",
-                    "備註1": "", "備註2": ""
-                }
-                final_df = pd.concat([final_df, pd.DataFrame([new_row])], ignore_index=True)
+            
+            # 🔥 關鍵修正：若 Submission 或 History 已經有這門課 (existing_courses)，就不要從課綱補資料 (避免重複)
+            if c_name in existing_courses:
+                continue
+
+            # 若沒出現過，則新增一筆空白資料
+            new_row = {
+                "勾選": False, "uuid": str(uuid.uuid4()), "科別": dept,
+                "年級": c_row['年級'], "學期": c_row['學期'],
+                "課程類別": c_row['課程類別'], "課程名稱": c_name,
+                "適用班級": c_row.get('預設適用班級') or c_row.get('適用班級', ''),
+                "教科書(優先1)": "", "冊次(1)": "", "出版社(1)": "", "審定字號(1)": "",
+                "教科書(優先2)": "", "冊次(2)": "", "出版社(2)": "", "審定字號(2)": "",
+                "備註1": "", "備註2": ""
+            }
+            final_df = pd.concat([final_df, pd.DataFrame([new_row])], ignore_index=True)
+            existing_courses.add(c_name) # 防止課綱本身有重複課程名稱時重複加入
 
     # --- 4. 統一對映課程類別 (修正版：加入班級比對) ---
     if not df_curr.empty:
@@ -379,11 +401,14 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
             
             if k in complex_map:
                 candidates = complex_map[k]
-                found_cat = candidates[0]['cat']
+                found_cat = candidates[0]['cat'] # 預設值
+                
+                # 嘗試找到有交集的班級設定，以取得更精確的類別 (部定/校定)
                 for cand in candidates:
                     if not row_classes.isdisjoint(cand['classes']):
                         found_cat = cand['cat']
                         break
+                
                 final_df.at[idx, '課程類別'] = found_cat
 
     # --- 5. 整理與排序 (強制正確順序) ---
@@ -416,6 +441,7 @@ def get_merged_data(dept, target_semester=None, target_grade=None, use_history=F
 # --- 4. 應用層：載入資料 ---
 def load_data(dept, semester, grade, history_year=None):
     use_hist = st.session_state.get('use_history_checkbox', False)
+    # 編輯模式：沒勾歷史時，啟用 pad_curriculum
     df = get_merged_data(
         dept, target_semester=semester, target_grade=grade, 
         use_history=use_hist, pad_curriculum=(not use_hist) 
@@ -431,6 +457,7 @@ def load_data(dept, semester, grade, history_year=None):
 # --- 5. 應用層：預覽資料 ---
 def load_preview_data(dept):
     use_hist = st.session_state.get('use_history_checkbox', False)
+    # 預覽模式：永遠不補空行 (只看 Submission + History)
     return get_merged_data(
         dept, target_semester=None, target_grade=None, 
         use_history=use_hist, pad_curriculum=False
